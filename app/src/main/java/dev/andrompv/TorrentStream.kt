@@ -32,6 +32,8 @@ class TorrentStream(private val context: Context, private val configureSession: 
     @Volatile private var activeSource: String? = null
     @Volatile private var selected: QueueItem? = null
     @Volatile private var closed = false
+    @Volatile private var backgroundSuspended = false
+    @Volatile private var bufferFailed = false
     private var token = UUID.randomUUID().toString()
     private var status = "No active torrent"
     private val openSockets = java.util.Collections.synchronizedSet(mutableSetOf<Socket>())
@@ -63,7 +65,7 @@ class TorrentStream(private val context: Context, private val configureSession: 
                     handle?.let { manager.remove(it) }
                     handle = null; info = null; activeSource = item.uri
                     val metadata = File(directory, "${sourceHash(item.uri)}.torrent")
-                    var data = if (metadata.exists()) metadata.readBytes() else null
+                    var data = readCachedMetadata(metadata)
                     if (data == null) {
                         val uri = Uri.parse(item.uri)
                         if (uri.scheme == "magnet") {
@@ -81,9 +83,13 @@ class TorrentStream(private val context: Context, private val configureSession: 
                             } else data = bytes
                         }
                         check(request == generation.get() && !closed) { "Torrent request canceled" }
-                        metadata.writeBytes(data!!)
+                        val fetched = data ?: error("Invalid torrent metadata")
+                        require(isValidTorrent(fetched)) { "Invalid torrent metadata" }
+                        metadata.writeBytes(fetched)
+                        data = fetched
                     }
-                    val torrent = TorrentInfo(data!!)
+                    val payload = data ?: error("Invalid torrent metadata")
+                    val torrent = TorrentInfo(payload)
                     require(torrent.isValid) { "Invalid torrent metadata" }
                     val downloadRoot = File(directory, torrent.infoHash().toHex()).apply { mkdirs() }
                     // Validate every path, not just playable paths, before libtorrent writes.
@@ -116,6 +122,7 @@ class TorrentStream(private val context: Context, private val configureSession: 
                 else {
                     val actual = items.firstOrNull { it.torrentIndex == item.torrentIndex } ?: error("The selected file is no longer in this torrent")
                     selected = actual
+                    bufferFailed = false
                     token = UUID.randomUUID().toString()
                     prioritize(actual.torrentIndex!!)
                     ensureServer()
@@ -201,9 +208,15 @@ class TorrentStream(private val context: Context, private val configureSession: 
                 val headers = mutableMapOf("Content-Type" to "application/octet-stream", "Accept-Ranges" to "bytes", "Content-Length" to range.length.toString())
                 if (rangeHeader != null) headers["Content-Range"] = "bytes ${range.start}-${range.end}/${item.length}"
                 if (parts[0] == "HEAD") { response(socket, if (rangeHeader == null) 200 else 206, "OK", headers); return }
-                val torrent = info ?: return
-                val current = handle ?: return
-                val file = safeFile(root ?: return, item.torrentPath ?: return)
+                val torrent = info
+                val current = handle
+                val base = root
+                val path = item.torrentPath
+                if (torrent == null || current == null || base == null || path == null) {
+                    response(socket, 503, "Service Unavailable", mapOf("Retry-After" to "2"))
+                    return
+                }
+                val file = safeFile(base, path)
                 val offset = torrent.files().fileOffset(item.torrentIndex!!)
                 // Wait BEFORE emitting a success response. Holes in a sparse file
                 // must never be presented as successfully downloaded media bytes.
@@ -234,14 +247,21 @@ class TorrentStream(private val context: Context, private val configureSession: 
     }
     private fun waitPiece(current: TorrentHandle, torrent: TorrentInfo, offset: Long, request: Int): Boolean {
         val piece = (offset / torrent.pieceLength()).toInt()
-        if (current.havePiece(piece)) return true
+        if (current.havePiece(piece)) {
+            bufferFailed = false
+            return true
+        }
         for (i in piece until minOf(piece + 8, torrent.numPieces())) current.setPieceDeadline(i, (i - piece) * 250)
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         while (System.nanoTime() < deadline && request == generation.get() && !closed && current.isValid) {
-            if (current.havePiece(piece)) return true
+            if (current.havePiece(piece)) {
+                bufferFailed = false
+                return true
+            }
             Thread.sleep(50)
         }
         val state = current.status()
+        bufferFailed = true
         status = "Torrent buffering timed out (${state.state()}, ${state.progress()}, ${state.errorCode().message}); select the file to retry"
         android.util.Log.w("andrompv-torrent", status)
         return false
@@ -259,9 +279,22 @@ class TorrentStream(private val context: Context, private val configureSession: 
         generation.incrementAndGet(); selected = null; closeSockets()
         session?.pause()
     }
+
+    /** Backgrounding must not leave Play pointed at a loopback URL that 404s. */
+    fun suspendForBackground() {
+        backgroundSuspended = true
+        pause()
+    }
+
+    fun isBackgroundSuspended(): Boolean = backgroundSuspended
+
+    fun clearBackgroundSuspend() {
+        backgroundSuspended = false
+    }
+
     fun statusLabel(): String {
         val current = handle
-        if (current?.isValid != true) return status
+        if (bufferFailed || current?.isValid != true) return status
         val state = current.status()
         return "Torrent ${(state.progress() * 100).toInt()}% · ${state.downloadRate() / 1024} KB/s · ${state.numPeers()} peers"
     }
@@ -271,16 +304,28 @@ class TorrentStream(private val context: Context, private val configureSession: 
         val metadata = File(directory, "${sourceHash(item.uri)}.torrent")
         require(metadata.exists()) { "No cached metadata for this download" }
         val torrent = TorrentInfo(metadata)
+        require(torrent.isValid) { "Invalid torrent metadata" }
         val targetRoot = File(directory, torrent.infoHash().toHex())
-        session?.find(torrent.infoHash())?.let { session?.remove(it) }
         if (item.torrentPath == null) {
+            session?.find(torrent.infoHash())?.let { session?.remove(it) }
             check(!targetRoot.exists() || targetRoot.deleteRecursively()) { "Could not delete torrent files" }
             check(metadata.delete()) { "Could not delete cached torrent metadata" }
+            if (activeSource == item.uri) {
+                handle = null
+                info = null
+                activeSource = null
+                selected = null
+            }
         } else {
             val file = safeFile(targetRoot, item.torrentPath)
             check(!file.exists() || file.delete()) { "Could not delete ${item.title}" }
+            val current = if (activeSource == item.uri && handle?.isValid == true) handle else session?.find(torrent.infoHash())
+            if (current?.isValid == true && item.torrentIndex != null) current.filePriority(item.torrentIndex, Priority.IGNORE)
+            if (activeSource == item.uri && selected?.torrentIndex == item.torrentIndex) {
+                selected = null
+                closeSockets()
+            }
         }
-        if (activeSource == item.uri) { handle = null; info = null; activeSource = null }
     }
     private fun closeSockets() { synchronized(openSockets) { openSockets.forEach { runCatching { it.close() } }; openSockets.clear() } }
     fun close() {
@@ -289,6 +334,16 @@ class TorrentStream(private val context: Context, private val configureSession: 
         worker.shutdown()
     }
     companion object {
+        private fun isValidTorrent(bytes: ByteArray) = runCatching { TorrentInfo(bytes).isValid }.getOrDefault(false)
+
+        private fun readCachedMetadata(metadata: File): ByteArray? {
+            if (!metadata.isFile) return null
+            val bytes = runCatching { metadata.readBytes() }.getOrNull() ?: return null
+            if (isValidTorrent(bytes)) return bytes
+            metadata.delete()
+            return null
+        }
+
         fun safeFile(root: File, path: String): File {
             require(path.isNotBlank() && !File(path).isAbsolute) { "Unsafe torrent file path" }
             val file = File(root, path).canonicalFile

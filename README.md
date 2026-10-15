@@ -46,8 +46,9 @@ Do not distribute this debug build as a store release; read the license notice.
   retained when the provider permits them. Open-with and share intents supported.
 - HTTP/HTTPS, RTSP, RTMP and HLS streams. Cleartext HTTP is deliberately permitted
   for the source project's HTTP/RTMP features and loopback torrent server.
-- Persistent queue, collapsible collections, next/previous, item move up/down,
-  remove, clear and repeat off/all/one. Manual next does not repeat one.
+- Persistent queue, current item, and sidebar visibility. Collapsible collections,
+  next/previous, long-press drag, move up/down, remove, clear and repeat off/all/one.
+  Manual next does not repeat one.
 - Play/pause, exact seeking, throttled scrub seeks, mute, volume, 0.25–4× speed,
   fullscreen and measured subtitle clearance above controls.
 - Embedded audio/subtitle selection; external SRT/ASS/SSA/VTT files copied to app
@@ -79,7 +80,7 @@ Do not distribute this debug build as a store release; read the license notice.
 This ports the player, not the macOS packaging/release scripts or marketing site.
 It is **not yet exact feature parity** with the desktop UI:
 
-- Queue reordering initially uses move actions rather than desktop drag/drop.
+- Queue reordering uses long-press drag onto another row, plus move up/down.
 - Android has no application-wide Trash: explicit deletion is permanent and
   provider-dependent. Torrent downloads are app-private and removed on uninstall;
   the downloads menu lists them rather than opening Finder.
@@ -90,9 +91,10 @@ It is **not yet exact feature parity** with the desktop UI:
   cannot reliably bound/cancel network extraction, so it never receives network
   sources. Local thumbnails depend on Android's decoder support, while playback
   itself uses mpv's broader format support.
-- Playback and downloads intentionally pause when the app backgrounds. Background
-  media service, lock-screen notification, picture-in-picture, casting, and TV UI
-  are not implemented. Returning to the app requires tapping Play.
+- Playback and downloads pause when the app backgrounds. Background media
+  service, lock-screen notification, picture-in-picture, casting, and TV UI
+  are not implemented. Returning to the app requires tapping Play. For a
+  torrent, that tap reopens the local stream and resumes from the saved position.
 - Torrent metadata is cached and files survive restarts, but no serialized
   libtorrent resume-state file is stored: existing pieces are rehashed on reopen.
 - BitTorrent/libtorrent is a different peer stack than desktop WebTorrent;
@@ -102,6 +104,7 @@ It is **not yet exact feature parity** with the desktop UI:
 - The native wrapper does not expose an END_FILE reason. Only the observed,
   single-consumed `eof-reached` advances the queue; failed loads time out instead
   of being mistaken for successful completion.
+- Share targets are video, audio, playlists, torrents, and text or magnet links.
 - Public magnet swarms, RTSP/RTMP cameras, every codec, physical-device hardware
   decode and provider-specific deletion need real-device testing.
 
@@ -113,7 +116,10 @@ It is **not yet exact feature parity** with the desktop UI:
 - Player `⋮`: tracks, subtitles, speed, volume, repeat, markers, screenshots,
   information, fullscreen and torrent downloads.
 - Tap video: play/pause; in fullscreen, show/hide controls.
-- Double tap: fullscreen; Back exits fullscreen before closing the app.
+- Double-tap the left or right third of the video to seek ±10 seconds.
+  Double-tap the center to toggle fullscreen. Back exits fullscreen before closing the app.
+- On a phone-width screen the play controls sit on their own row. Subtitle, audio,
+  volume, and the other tools scroll on the row beneath them.
 - Hardware keyboard: Space/play-pause, arrows for ±10s, media next/previous,
   `M` mute, `[`/`]` speed, `\` reset speed, `F` fullscreen, Esc exit fullscreen.
 
