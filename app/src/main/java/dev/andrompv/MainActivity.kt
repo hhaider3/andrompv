@@ -34,9 +34,7 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
@@ -53,6 +51,8 @@ import dev.andrompv.ui.PlayerUiState
 import dev.andrompv.ui.Sheet
 import java.io.File
 import kotlin.math.roundToInt
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 
 /** Hosts the Compose player UI and the mpv surface; playback state lives in [PlayerController]. */
 class MainActivity : ComponentActivity(), PlayerHost {
@@ -201,10 +201,20 @@ class MainActivity : ComponentActivity(), PlayerHost {
     private fun setFullscreen(enter: Boolean) {
         fullscreenMode = enter
         requestedOrientation = when {
-            !enter || !player.settings.rotateInFullscreen -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            !enter || !player.settings.rotateInFullscreen -> rotationLock
             (player.videoAspect ?: 16.0 / 9) >= 1.0 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         }
+    }
+
+    /** The orientation picked with the rotate button; leaving full screen returns to it. */
+    private var rotationLock = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+    override fun rotateScreen() {
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        rotationLock = if (landscape) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        requestedOrientation = rotationLock
     }
 
     override fun setSystemBarsHidden(hidden: Boolean) {
@@ -337,6 +347,8 @@ class MainActivity : ComponentActivity(), PlayerHost {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
         handleShortcut(keyCode, event) || super.onKeyDown(keyCode, event)
+
+    override fun handleKey(event: KeyEvent): Boolean = handleShortcut(event.keyCode, event)
 
     private fun handleShortcut(keyCode: Int, event: KeyEvent): Boolean {
         val command = event.isCtrlPressed || event.isMetaPressed

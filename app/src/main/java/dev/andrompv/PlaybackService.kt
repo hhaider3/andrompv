@@ -121,7 +121,8 @@ private class MpvSessionPlayer(private val controller: PlayerController) : Simpl
             .apply { if (currentIndex >= 0) setCurrentMediaItemIndex(currentIndex) }
             .setPlaybackState(playbackState)
             .setPlayWhenReady(!controller.isPaused, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
-            .setIsLoading(controller.isLoading)
+            // Media3 rejects "loading" while idle (for example between a torrent and its first file).
+            .setIsLoading(controller.isLoading && playbackState != STATE_IDLE)
             .setContentPositionMs { (controller.engine.position * 1000).toLong() }
             .setPlaybackParameters(PlaybackParameters(controller.speed.toFloat()))
             .setRepeatMode(

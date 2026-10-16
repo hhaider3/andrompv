@@ -168,4 +168,29 @@ class MediaModelsTest {
         assertEquals("+00:15", signedPlaybackTime(15.0)); assertEquals("−01:05", signedPlaybackTime(-65.0))
         assertEquals(VideoFit.FILL, VideoFit.FIT.next()); assertEquals(VideoFit.FIT, VideoFit.STRETCH.next())
     }
+
+    @Test fun magnetNamesDecodeFromOpaqueLinks() {
+        val link = "magnet:?xt=urn:btih:44b01a9b16a83f68c640128f9a8fc25c6aa3cb74&dn=%5BToonsHub%5D%20JoJos%20Bizarre%20Adventure%20S06E04%201080p%20NF%20WEB-DL%20DUAL%20AAC2.0%20H.264%20%28JoJo%20no%20Kimyou%20na%20Bouken%3A%20Steel%20Ball%20Run%20-%202nd%20-%203rd%20STAGE%2C%20Dual-Audio%2C%20Multi-Subs%29&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
+        assertTrue(MediaSupport.isNetwork(link))
+        assertEquals(
+            "[ToonsHub] JoJos Bizarre Adventure S06E04 1080p NF WEB-DL DUAL AAC2.0 H.264 (JoJo no Kimyou na Bouken: Steel Ball Run - 2nd - 3rd STAGE, Dual-Audio, Multi-Subs)",
+            MediaSupport.magnetName(link)
+        )
+        assertEquals("Big Buck Bunny", MediaSupport.magnetName("magnet:?xt=urn:btih:abc&dn=Big+Buck+Bunny"))
+        assertEquals("C++ Primer", MediaSupport.magnetName("magnet:?dn=C%2B%2B%20Primer&xt=urn:btih:abc"))
+        assertNull(MediaSupport.magnetName("magnet:?xt=urn:btih:abc"))
+        assertNull(MediaSupport.magnetName("magnet:?xt=urn:btih:abc&dn="))
+    }
+
+    @Test fun reopeningAQueuedTorrentKeepsTheExistingEntries() {
+        val queue = PlaybackQueue()
+        val episode = QueueItem("magnet:?xt=urn:btih:abc", "Episode 1.mkv", torrentIndex = 0)
+        queue.enqueue(listOf(episode))
+        val placeholder = QueueItem("magnet:?xt=urn:btih:abc", "show")
+        queue.enqueue(listOf(placeholder))
+        val resolved = listOf(QueueItem(placeholder.uri, "Episode 1.mkv", torrentIndex = 0))
+        assertTrue(queue.replace(placeholder.id, resolved))
+        assertEquals(listOf(episode), queue.items)
+        assertEquals(episode, resolved.firstNotNullOfOrNull { r -> queue.items.firstOrNull { it.key == r.key } })
+    }
 }

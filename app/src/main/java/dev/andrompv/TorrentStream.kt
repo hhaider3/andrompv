@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import org.libtorrent4j.*
-import org.libtorrent4j.swig.torrent_flags_t
 import java.io.File
 import java.io.RandomAccessFile
 import java.net.InetAddress

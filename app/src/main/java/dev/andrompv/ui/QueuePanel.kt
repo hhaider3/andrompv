@@ -2,6 +2,15 @@ package dev.andrompv.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -62,12 +71,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,6 +98,8 @@ import dev.andrompv.QueueGroup
 import dev.andrompv.QueueItem
 import dev.andrompv.RepeatMode
 import dev.andrompv.playbackTime
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 
 private sealed interface QueueEntry {
     val key: String
@@ -118,6 +127,7 @@ fun QueuePanel(player: PlayerController, ui: PlayerUiState, host: PlayerHost, wi
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val panelWidth = if (wide) 340.dp else (maxWidth - 44.dp).coerceAtMost(360.dp)
+        val shortScreen = maxHeight < 480.dp
         AnimatedVisibility(
             visible,
             enter = slideInHorizontally { -it } + fadeIn(),
@@ -129,9 +139,14 @@ fun QueuePanel(player: PlayerController, ui: PlayerUiState, host: PlayerHost, wi
             val navigation = with(density) { insets.getBottom(this).toDp() }
             val controls = with(density) { ui.controlsHeightPx.toDp() }
             val bottom by animateDpAsState(
-                if (wide && ui.controlsVisible && player.hasMedia && controls > 0.dp) controls + 8.dp else navigation + 10.dp,
+                if (wide && !shortScreen && ui.controlsVisible && player.hasMedia && controls > 0.dp) controls + 8.dp else navigation + 10.dp,
                 label = "sidebarBottom"
             )
+            // Swipe left to close: the panel follows the finger and closes past a quarter of
+            // its width or on a flick; otherwise it springs back.
+            var swipe by remember { mutableFloatStateOf(0f) }
+            val panelPx = with(density) { panelWidth.toPx() }
+            val dragState = rememberDraggableState { delta -> swipe = (swipe + delta).coerceIn(-panelPx, 0f) }
             Box(
                 Modifier
                     .fillMaxHeight()
@@ -140,6 +155,19 @@ fun QueuePanel(player: PlayerController, ui: PlayerUiState, host: PlayerHost, wi
             ) {
                 Column(
                     Modifier
+                        .offset { IntOffset(swipe.roundToInt(), 0) }
+                        .draggable(
+                            state = dragState,
+                            orientation = Orientation.Horizontal,
+                            onDragStopped = { velocity ->
+                                if (swipe < -panelPx / 4 || velocity < -800f) {
+                                    animate(swipe, -panelPx, animationSpec = tween(160)) { value, _ -> swipe = value }
+                                    player.setSidebarVisible(false)
+                                } else {
+                                    animate(swipe, 0f, animationSpec = spring()) { value, _ -> swipe = value }
+                                }
+                            }
+                        )
                         .width(panelWidth)
                         .fillMaxHeight()
                         .glass(RoundedCornerShape(22.dp), fill = Palette.glassStrong, opacity = if (wide) 0.94f else 1f)
@@ -151,7 +179,7 @@ fun QueuePanel(player: PlayerController, ui: PlayerUiState, host: PlayerHost, wi
                     } else {
                         QueueList(player, ui, Modifier.weight(1f))
                     }
-                    player.current?.let { NowPlayingCard(player, it) }
+                    if (!shortScreen) player.current?.let { NowPlayingCard(player, it) }
                 }
             }
         }

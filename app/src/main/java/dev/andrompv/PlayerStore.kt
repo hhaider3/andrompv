@@ -27,7 +27,11 @@ class PlayerStore(context: Context) {
     private val preferences = context.getSharedPreferences("andrompv", Context.MODE_PRIVATE)
     private fun objectFor(key: String) = runCatching { JSONObject(preferences.getString(key, "{}")!!) }.getOrDefault(JSONObject())
     private val positions = loadPositions()
-    private val markers = objectFor("playback.markers.v1")
+
+    init {
+        // Intro/outro markers were removed in 2.1; drop their saved data.
+        if (preferences.contains("playback.markers.v1")) preferences.edit().remove("playback.markers.v1").apply()
+    }
 
     var volume: Double
         get() = preferences.getFloat("volume", 80f).toDouble().coerceIn(0.0, 100.0)
@@ -141,26 +145,6 @@ class PlayerStore(context: Context) {
             preferences.edit().putString(POSITIONS_KEY, migrated.toString()).remove(LEGACY_POSITIONS_KEY).apply()
         }
         return migrated
-    }
-
-    fun markers(item: QueueItem): Markers {
-        val o = markers.optJSONObject(item.key) ?: return Markers()
-        return Markers(
-            o.optDouble("intro").takeIf(Double::isFinite),
-            o.optDouble("outro").takeIf(Double::isFinite)
-        )
-    }
-
-    fun saveMarkers(item: QueueItem, value: Markers) {
-        if (value == markers(item)) return
-        if (value.intro == null && value.outro == null) markers.remove(item.key)
-        else markers.put(
-            item.key,
-            JSONObject()
-                .put("intro", value.intro ?: JSONObject.NULL)
-                .put("outro", value.outro ?: JSONObject.NULL)
-        )
-        preferences.edit().putString("playback.markers.v1", markers.toString()).apply()
     }
 
     fun save(queue: PlaybackQueue) {

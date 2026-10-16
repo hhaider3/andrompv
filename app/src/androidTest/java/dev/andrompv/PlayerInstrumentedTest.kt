@@ -171,9 +171,8 @@ class PlayerInstrumentedTest {
 
             val item = player.queue.current!!
             val store = PlayerStore(context)
-            store.remember(item, 8.0, 24.0); store.saveMarkers(item, Markers(2.0, 20.0)); store.save(player.queue)
+            store.remember(item, 8.0, 24.0); store.save(player.queue)
             assertEquals(8.0, PlayerStore(context).resume(item), 0.01)
-            assertEquals(Markers(2.0, 20.0), PlayerStore(context).markers(item))
             val restored = PlaybackQueue(); PlayerStore(context).restore(restored)
             assertTrue(restored.items.any { it.key == item.key })
 

@@ -1,8 +1,8 @@
-# Verification — 2026-10-15 (andrompv 2.0.0)
+# Verification — 2026-10-15 (andrompv 2.1.0)
 
 ## Automated checks
 
-- `./gradlew :app:testDebugUnitTest`: **16 passed**, no failures or skips.
+- `./gradlew :app:testDebugUnitTest`: **18 passed**, no failures or skips.
 - `./gradlew :app:lintDebug`: **0 errors**, 27 warnings. The warnings cover:
   - newer dependency versions;
   - KTX helper suggestions;
@@ -29,7 +29,7 @@
    - exact seek;
    - Save Screenshot written to MediaStore Pictures/andrompv and decoded as an image;
    - F / Esc full screen;
-   - resume and marker persistence and queue restore;
+   - resume persistence and queue restore;
    - landscape: transport, queue and full-screen buttons inside the window;
    - subtitle clearance lifting `sub-pos` above the controls;
    - the queue panel floating over the video without overlapping the control bar;
@@ -70,6 +70,25 @@
 - The R8 release build (signed with the local debug key, only for this test) launched
   and played video.
 
+## Physical phone checks (2.1.0)
+
+OnePlus CPH2749, Android 16 (API 36), 1272×2772 at 560 dpi. Checked by hand over adb,
+without the instrumented suite (it uninstalls the app, which would wipe the owner's data).
+
+- Hardware decoding and high-quality scaling render correctly on the real GPU.
+- Seek bar: dragging follows the finger. In 2.0.0 only the first touch registered,
+  because the drag handler consumed each event before reading its movement.
+- Magnet links: an opaque `magnet:?…` link opens and streams. In 2.0.0 it failed with
+  "This isn't a hierarchical URI", because Android's `Uri.getQueryParameter` rejects
+  opaque URIs.
+- Reopening a magnet that is already queued plays the existing entry. In 2.0.0 it
+  played an unqueued copy and Media3 rejected the resulting "loading while idle" state.
+- Queue panel: swipe left to close; in phone landscape it takes the full height.
+- Rotate button: flips to landscape and back. The paused frame is redrawn after rotating.
+- The landscape control row fits a phone (screenshot in ⋮, no volume slider), with
+  rotate at the far right.
+- Hardware keyboard: Space toggles playback even after Tab moves focus into the controls.
+
 ## Emulator rendering finding
 
 mpv's default high-quality scalers presented black, and sometimes dotted, frames on
@@ -94,10 +113,9 @@ uses a radial gradient.
 
 ## Not claimed verified
 
-- Anything on a physical phone or tablet:
-  - hardware decoding;
-  - high-quality scaling on real GPUs;
-  - picture-in-picture and notification behavior across OEM skins.
+- Other phones and tablets: hardware decoding and scaling were checked on one OnePlus phone
+  only. Picture-in-picture, the media notification and background audio were checked on
+  the emulator, not yet on a phone.
 - Every codec family.
 - Public magnet and swarm behavior; WebTorrent-only peers; RTSP/RTMP servers.
 - Provider-specific permanent deletion.

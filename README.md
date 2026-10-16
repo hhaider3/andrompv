@@ -57,21 +57,21 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
 - Menus that tick the active choice:
   - **Subtitles**: Off, tracks with language names, Open Subtitle File…, Subtitle Settings…;
   - **Audio**: tracks with codec and channel layout;
-  - **Speed**: 0.25–3×;
-  - **Intro/outro markers**: set, skip and clear.
+  - **Speed**: 0.25–3×.
 - Live subtitle appearance panel: size, outline, background, bold, text color and sync
   delay. Settings persist, and subtitles move clear of the controls by the measured overlap.
 - **Up Next** queue sidebar:
   - collapsible playlist and torrent collections;
   - drag-handle reordering;
+  - swipe left on the panel to close it;
   - long-press menus (Play, Move Up/Down, Remove, Delete);
   - watch-progress bars on rows, and a Now Playing card with metadata pills.
   - Repeat off/all/one. Manual Next never repeats one item.
 - Seek previews like macmpv's: a silent decoder shows the nearest keyframe while you
   drag, then sharpens to the exact frame once your finger rests (local files only).
-  The seek bar also shows the buffered range and marker ticks.
+  Drag anywhere along the seek bar; it also shows the buffered range.
 - Per-file resume (500 most recent files, as in macmpv), with a "Resumed from 12:34 ·
-  Start over" prompt. Contextual **Skip Intro** / **Skip Outro** chips.
+  Start over" prompt.
 - Local files through the Storage Access Framework (grants kept where the provider
   allows), open-with and share intents, HTTP/HTTPS/RTSP/RTMP/HLS, and M3U playlists.
 - `.torrent`, `.magnet` and magnet links through native libtorrent:
@@ -100,8 +100,9 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
   - swipe up and down on the right for volume, on the left for brightness;
   - touch and hold for 2× speed;
   - pinch to zoom to fill.
-- **Full screen** hides the system bars and turns the screen to match the video.
-  Fit / Zoom to fill / Stretch modes.
+- **Full screen** hides the system bars and turns the screen to match the video. A
+  **rotate** button (far right of the control bar) flips between portrait and landscape
+  and holds that orientation until pressed again. Fit / Zoom to fill / Stretch modes.
 - **Settings**:
   - hardware decoding;
   - high-quality scaling;
@@ -133,6 +134,7 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
   is stored: existing pieces are rehashed on reopen. BitTorrent/libtorrent is a
   different peer stack from desktop WebTorrent, so WebTorrent-only browser swarms are
   not expected to work.
+- macmpv's intro/outro markers are not part of the Android port.
 - macmpv's queues and settings do not migrate to Android.
 - Casting and an Android TV interface are not implemented.
 
@@ -142,9 +144,11 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
   open a stream or magnet link. **⋮**: picture-in-picture, video fit, repeat, media
   info, torrent downloads, settings. On phones it also holds Mute and Save Screenshot.
 - Control bar:
-  - queue, subtitles, subtitle style, audio and markers;
+  - queue, subtitles, subtitle style and audio;
   - previous, back, play/pause, forward and next;
-  - mute and volume, speed, screenshot, full screen.
+  - mute and volume, speed, screenshot, full screen, ⋮ and rotate.
+  - On narrower landscape screens the screenshot button moves into ⋮ and the volume
+    slider is left out (mute stays).
 - Tap the video to show or hide the controls. They hide after 3.5 s of playback and
   stay up while paused or while a menu is open.
 - Hardware keyboard (as in macmpv):
@@ -171,13 +175,14 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-Sixteen JVM tests cover:
+Eighteen JVM tests cover:
 
 - completion and repeat modes;
-- queue identity, reordering (including drag), removal and torrent placeholder replacement;
+- queue identity, reordering (including drag), removal, torrent placeholder replacement
+  and reopening an already-queued torrent;
 - resume pruning;
 - natural sorting;
-- stream validation and HLS handling;
+- stream validation, HLS handling and magnet display names;
 - byte ranges and torrent path traversal;
 - labels.
 

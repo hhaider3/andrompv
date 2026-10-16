@@ -14,11 +14,9 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.view.Surface
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -27,6 +25,8 @@ import java.util.UUID
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 
 /** A short-lived message with an optional action, shown as a pill above the controls. */
 data class Notice(
@@ -70,7 +70,6 @@ class PlayerController(context: Context) {
     var collapsedGroups by mutableStateOf<Set<String>>(emptySet()); private set
     var audioTracks by mutableStateOf<List<TrackInfo>>(emptyList()); private set
     var subtitleTracks by mutableStateOf<List<TrackInfo>>(emptyList()); private set
-    var markers by mutableStateOf(Markers()); private set
     var subtitleStyle by mutableStateOf(store.style); private set
     var settings by mutableStateOf(store.settings); private set
     var metadata by mutableStateOf<MediaMetadata?>(null); private set
@@ -122,7 +121,8 @@ class PlayerController(context: Context) {
     private val ticker = object : Runnable {
         override fun run() {
             sync()
-            if (current?.isTorrent == true) torrentStatus = torrents.statusLabel()
+            // Only a torrent that play() started has a status; a restored one waits for Play.
+            if (current?.isTorrent == true && torrentStatus != null) torrentStatus = torrents.statusLabel()
             if (uiVisible || isPlaying) main.postDelayed(this, 1000)
         }
     }
@@ -211,6 +211,14 @@ class PlayerController(context: Context) {
         surfaceHeight = height
         engine.updateSurfaceSize(width, height)
         updateClearance()
+        // mpv does not redraw a paused frame into a resized surface (after rotating);
+        // an exact zero-length seek re-presents it.
+        main.removeCallbacks(redrawPaused)
+        if (engine.hasFile && engine.paused && !scrubbing) main.postDelayed(redrawPaused, 120)
+    }
+
+    private val redrawPaused = Runnable {
+        if (engine.hasFile && engine.paused && !scrubbing) engine.command("seek", "0", "relative+exact")
     }
 
     fun detachSurface() {
@@ -321,7 +329,6 @@ class PlayerController(context: Context) {
         currentId = queue.currentId
         repeat = queue.repeat
         collapsedGroups = queue.collapsedGroups.toSet()
-        markers = queue.current?.let(store::markers) ?: Markers()
         queueVersion++
         notifySessionIfChanged()
     }
@@ -333,7 +340,10 @@ class PlayerController(context: Context) {
         )
         if (signature == sessionSignature) return
         sessionSignature = signature
-        sessionListeners.forEach { it() }
+        // The media session mirrors the player; its failures must never break playback itself.
+        sessionListeners.forEach { listener ->
+            runCatching(listener).onFailure { android.util.Log.w("andrompv", "Media session update failed", it) }
+        }
     }
 
     fun dismissError() { error = null }
@@ -389,7 +399,10 @@ class PlayerController(context: Context) {
                             if (!queue.replace(item.id, opened.items)) return@fold
                             store.save(queue)
                             publishQueue()
-                            opened.items.firstOrNull()?.let { play(it, resume) }
+                            // Reopening a torrent that is already queued keeps the existing entries,
+                            // so play the queue's own copy rather than the freshly resolved object.
+                            opened.items.firstNotNullOfOrNull { resolved -> queue.items.firstOrNull { it.key == resolved.key } }
+                                ?.let { play(it, resume) }
                         } else {
                             torrentStatus = torrents.statusLabel()
                             loadSource(item, opened.url ?: error("No torrent stream"), resume)
@@ -406,6 +419,7 @@ class PlayerController(context: Context) {
             loadSource(item, item.uri, resume)
         }
         publishQueue()
+        store.save(queue)
         sync()
         ensureService()
         main.removeCallbacks(ticker)
@@ -593,34 +607,6 @@ class PlayerController(context: Context) {
                     onFailure = { showError(it.message ?: "Subtitle failed") }
                 )
             }
-        }
-    }
-
-    // endregion
-
-    // region Markers
-
-    fun setIntroEndHere() = updateMarkers { it.copy(intro = engine.position) }
-    fun setOutroStartHere() = updateMarkers { it.copy(outro = engine.position) }
-    fun clearMarkers() = updateMarkers { Markers() }
-
-    private fun updateMarkers(change: (Markers) -> Markers) {
-        val item = queue.current ?: return
-        store.saveMarkers(item, change(store.markers(item)))
-        markers = store.markers(item)
-    }
-
-    fun skipIntro() {
-        val intro = markers.intro ?: return
-        seek(intro)
-    }
-
-    fun skipOutro() {
-        markers.outro ?: return
-        val next = queue.next()
-        if (next != null) play(next) else {
-            seek(duration)
-            engine.pause(true)
         }
     }
 
@@ -814,7 +800,7 @@ class PlayerController(context: Context) {
                 }
             }
         }
-        if (uri.scheme == "magnet") return uri.getQueryParameter("dn") ?: "Magnet stream"
+        if (uri.scheme.equals("magnet", ignoreCase = true)) return MediaSupport.magnetName(uri.toString()) ?: "Magnet stream"
         return uri.lastPathSegment?.takeIf(String::isNotBlank) ?: uri.host ?: "Media"
     }
 

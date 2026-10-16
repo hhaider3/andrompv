@@ -78,8 +78,6 @@ data class QueueGroup(
     val isCollapsible: Boolean get() = kind != GroupKind.STANDALONE || items.size > 1
 }
 
-data class Markers(val intro: Double? = null, val outro: Double? = null)
-
 data class TrackInfo(
     val id: String,
     val label: String,
@@ -120,6 +118,17 @@ object MediaSupport {
             uri.rawSchemeSpecificPart.contains(Regex("(?i)(?:^|[?&])xt=urn(?:%3a|:)(?:btih|btmh)(?:%3a|:)[a-z0-9]+"))
         } else uri.scheme?.lowercase() in setOf("http", "https", "rtmp", "rtsp") && !uri.host.isNullOrBlank()
     }.getOrDefault(false)
+    /**
+     * The `dn` (display name) of a magnet link. Magnet URIs are opaque ("magnet:?…"), so
+     * Android's Uri query helpers throw on them; parse the query by hand instead.
+     */
+    fun magnetName(magnet: String): String? = magnet.substringAfter('?', "").split('&')
+        .firstOrNull { it.startsWith("dn=", ignoreCase = true) }
+        ?.substring(3)
+        ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrNull() }
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
     fun isHls(text: String) = text.uppercase().let { "#EXT-X-TARGETDURATION" in it || "#EXT-X-STREAM-INF" in it || "#EXT-X-MEDIA-SEQUENCE" in it }
     fun playlistEntries(text: String, resolve: (String) -> String?): List<String> {
         if (isHls(text)) return emptyList()

@@ -5,9 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
@@ -60,13 +58,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -94,6 +91,8 @@ import dev.andrompv.signedPlaybackTime
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 
 /** Things only the activity can do: pickers, window modes, brightness. */
 interface PlayerHost {
@@ -103,8 +102,12 @@ interface PlayerHost {
     fun openSubtitleFile()
     fun takeScreenshot()
     fun toggleFullscreen()
+    /** Flips between portrait and landscape and holds it until pressed again. */
+    fun rotateScreen()
     fun enterPictureInPicture()
     fun setSystemBarsHidden(hidden: Boolean)
+    /** Player keyboard shortcuts; true when [event] was one. */
+    fun handleKey(event: android.view.KeyEvent): Boolean
     fun brightness(): Float
     fun setBrightness(value: Float)
 }
@@ -159,14 +162,30 @@ fun PlayerScreen(
 ) {
     // No background here: the window background is the stage, and anything opaque drawn in
     // this window would cover the SurfaceView that mpv renders into beneath it.
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // Shortcuts are checked before a focused control sees the key, so Space toggles playback
+    // instead of pressing whichever button holds focus. The matching key-up is swallowed too.
+    var handledKey by remember { mutableIntStateOf(-1) }
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent { event ->
+                val native = event.nativeKeyEvent
+                when (native.action) {
+                    android.view.KeyEvent.ACTION_DOWN -> host.handleKey(native).also { if (it) handledKey = native.keyCode }
+                    android.view.KeyEvent.ACTION_UP -> (native.keyCode == handledKey).also { if (it) handledKey = -1 }
+                    else -> false
+                }
+            }
+    ) {
         val wide = maxWidth >= 600.dp
         val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val rootHeightPx = constraints.maxHeight
         video()
         if (inPictureInPicture) return@BoxWithConstraints
 
-        val showControls = ui.controlsVisible && player.hasMedia
+        // On short landscape phones the open queue needs the full height, so the controls step aside.
+        val shortScreen = maxHeight < 480.dp
+        val showControls = ui.controlsVisible && player.hasMedia && !(shortScreen && player.isSidebarVisible)
         val showHeader = ui.controlsVisible || !player.hasMedia
 
         LaunchedEffect(
@@ -236,7 +255,6 @@ fun PlayerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 NoticePill(player)
-                ContextualSkip(player, ui, Modifier.align(Alignment.End))
                 AnimatedVisibility(
                     showControls,
                     enter = fadeIn(tween(180)) + slideInVertically { it / 3 },
@@ -467,22 +485,6 @@ private fun NoticePill(player: PlayerController) {
                 }
             }
         }
-    }
-}
-
-/** Offers "Skip Intro" before the intro marker and "Skip Outro" once the outro begins. */
-@Composable
-private fun ContextualSkip(player: PlayerController, ui: PlayerUiState, modifier: Modifier) {
-    val markers = player.markers
-    val position = player.position
-    val intro = markers.intro?.takeIf { player.hasFile && position < it - 1 }
-    val outro = markers.outro?.takeIf { player.hasFile && position >= it && (player.duration <= 0 || position < player.duration - 1) }
-    AnimatedVisibility(intro != null || outro != null, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
-        SkipChip(
-            text = if (intro != null) "Skip Intro" else if (player.canGoNext) "Skip Outro" else "Skip to End",
-            onClick = { ui.interact(); if (intro != null) player.skipIntro() else player.skipOutro() },
-            modifier = Modifier.padding(bottom = 10.dp, end = 4.dp)
-        )
     }
 }
 

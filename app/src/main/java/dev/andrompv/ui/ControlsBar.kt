@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,8 +32,6 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.ClosedCaptionDisabled
 import androidx.compose.material.icons.rounded.CloudDownload
-import androidx.compose.material.icons.rounded.FastForward
-import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Forward30
@@ -50,6 +49,7 @@ import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Replay30
 import androidx.compose.material.icons.rounded.Replay5
+import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
@@ -64,11 +64,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,7 +79,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -95,7 +93,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.andrompv.Markers
 import dev.andrompv.PlayerController
 import dev.andrompv.RepeatMode
 import dev.andrompv.SeekPreview
@@ -104,11 +101,13 @@ import dev.andrompv.playbackTime
 import dev.andrompv.speedLabel
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 
 private val speeds = listOf(0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
 
 /**
- * macmpv's PlayerControls: a time row with the seek bar, then the queue/subtitle/audio/marker
+ * macmpv's PlayerControls: a time row with the seek bar, then the queue/subtitle/audio
  * cluster, the transport cluster, and the volume/speed/screenshot/fullscreen cluster. Phones
  * stack the transport above a compact tool row.
  */
@@ -138,7 +137,6 @@ fun ControlsBar(
                     position = scrubSeconds ?: player.position,
                     duration = player.duration,
                     bufferedAhead = player.bufferedAhead,
-                    markers = player.markers,
                     enabled = player.hasFile && player.duration > 0,
                     onScrubStart = { seconds ->
                         scrubSeconds = seconds
@@ -200,24 +198,32 @@ private fun TimeLabel(seconds: Double) {
 
 @Composable
 private fun WideButtons(player: PlayerController, ui: PlayerUiState, host: PlayerHost) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-            QueueToggle(player, ui)
-            SubtitleMenu(player, ui, host)
-            SubtitleStyleButton(player, ui)
-            AudioMenu(player, ui)
-            MarkerMenu(player, ui)
-        }
-        Transport(player, ui, inlineSkips = true, compact = false)
-        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-            MuteButton(player, ui)
-            VolumeSlider(player, ui, Modifier.widthIn(min = 64.dp, max = 96.dp).weight(1f, fill = false))
-            SpeedMenu(player, ui)
-            PlayerIconButton(Icons.Rounded.PhotoCamera, "Save screenshot", enabled = player.hasFile) {
-                ui.interact(); host.takeScreenshot()
+    // Each side cluster gets half of what the transport leaves. Narrow rows (phones in
+    // landscape) move the camera into the ⋮ menu and drop the volume slider, keeping mute.
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val showCamera = maxWidth >= 790.dp
+        val showVolumeSlider = maxWidth >= 960.dp
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                QueueToggle(player, ui)
+                SubtitleMenu(player, ui, host)
+                SubtitleStyleButton(player, ui)
+                AudioMenu(player, ui)
             }
-            FullscreenButton(ui, host)
-            MoreMenu(player, ui, host, includeTools = false)
+            Transport(player, ui, compact = false)
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                MuteButton(player, ui)
+                if (showVolumeSlider) VolumeSlider(player, ui, Modifier.widthIn(min = 64.dp, max = 96.dp).weight(1f, fill = false))
+                SpeedMenu(player, ui)
+                if (showCamera) {
+                    PlayerIconButton(Icons.Rounded.PhotoCamera, "Save screenshot", enabled = player.hasFile) {
+                        ui.interact(); host.takeScreenshot()
+                    }
+                }
+                FullscreenButton(ui, host)
+                MoreMenu(player, ui, host, includeTools = !showCamera)
+                RotateButton(ui, host)
+            }
         }
     }
 }
@@ -225,7 +231,7 @@ private fun WideButtons(player: PlayerController, ui: PlayerUiState, host: Playe
 @Composable
 private fun CompactButtons(player: PlayerController, ui: PlayerUiState, host: PlayerHost) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Transport(player, ui, inlineSkips = false, compact = true)
+        Transport(player, ui, compact = true)
         Spacer(Modifier.height(2.dp))
         Row(
             Modifier
@@ -237,17 +243,17 @@ private fun CompactButtons(player: PlayerController, ui: PlayerUiState, host: Pl
             SubtitleMenu(player, ui, host, size = 38)
             SubtitleStyleButton(player, ui, size = 38)
             AudioMenu(player, ui, size = 38)
-            MarkerMenu(player, ui, size = 38)
             Spacer(Modifier.weight(1f).widthIn(min = 4.dp))
             SpeedMenu(player, ui)
             FullscreenButton(ui, host, size = 38)
             MoreMenu(player, ui, host, includeTools = true, size = 38)
+            RotateButton(ui, host, size = 38)
         }
     }
 }
 
 @Composable
-private fun Transport(player: PlayerController, ui: PlayerUiState, inlineSkips: Boolean, compact: Boolean) {
+private fun Transport(player: PlayerController, ui: PlayerUiState, compact: Boolean) {
     val step = player.settings.seekStep
     Row(
         horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 8.dp),
@@ -259,19 +265,9 @@ private fun Transport(player: PlayerController, ui: PlayerUiState, inlineSkips: 
         PlayerIconButton(replayIcon(step), "Back $step seconds", enabled = player.hasFile, size = 44.dp, iconSize = 26.dp) {
             ui.interact(); player.seekBy(-step.toDouble())
         }
-        if (inlineSkips && player.markers.intro != null) {
-            PlayerIconButton(Icons.Rounded.FastForward, "Skip intro", size = 36.dp, iconSize = 20.dp) {
-                ui.interact(); player.skipIntro()
-            }
-        }
         PlayButton(player, ui, size = if (compact) 56 else 50)
         PlayerIconButton(forwardIcon(step), "Forward $step seconds", enabled = player.hasFile, size = 44.dp, iconSize = 26.dp) {
             ui.interact(); player.seekBy(step.toDouble())
-        }
-        if (inlineSkips && player.markers.outro != null) {
-            PlayerIconButton(Icons.Rounded.SkipNext, "Skip outro", size = 36.dp, iconSize = 20.dp) {
-                ui.interact(); player.skipOutro()
-            }
         }
         PlayerIconButton(Icons.Rounded.SkipNext, "Next", enabled = player.canGoNext, iconSize = 26.dp) {
             ui.interact(); player.next()
@@ -422,6 +418,13 @@ private fun FullscreenButton(ui: PlayerUiState, host: PlayerHost, size: Int = 40
     }
 }
 
+@Composable
+private fun RotateButton(ui: PlayerUiState, host: PlayerHost, size: Int = 40) {
+    PlayerIconButton(Icons.Rounded.ScreenRotation, "Rotate screen", size = size.dp, iconSize = 22.dp) {
+        ui.interact(); host.rotateScreen()
+    }
+}
+
 /** Keeps the auto-hiding controls up while a menu attached to them is open. */
 @Composable
 fun HoldControls(ui: PlayerUiState, active: Boolean) {
@@ -477,47 +480,6 @@ private fun AudioMenu(player: PlayerController, ui: PlayerUiState, size: Int = 4
                 MenuEntry(track.label, checked = track.selected, detail = track.detail, onClick = {
                     open = false; player.selectAudioTrack(track.id)
                 })
-            }
-        }
-    }
-}
-
-@Composable
-private fun MarkerMenu(player: PlayerController, ui: PlayerUiState, size: Int = 40) {
-    var open by remember { mutableStateOf(false) }
-    HoldControls(ui, open)
-    val markers = player.markers
-    Box {
-        PlayerIconButton(
-            Icons.Rounded.Flag,
-            "Intro and outro markers",
-            enabled = player.hasMedia,
-            size = size.dp,
-            iconSize = 21.dp,
-            tint = if (markers.intro != null || markers.outro != null) Palette.accent else Color.White.copy(alpha = 0.92f)
-        ) { ui.interact(); open = true }
-        GlassMenu(open, { open = false }) {
-            MenuLabel("Markers")
-            MenuEntry("Set Intro End Here", detail = playbackTime(player.position), enabled = player.hasFile, onClick = {
-                open = false; player.setIntroEndHere()
-            })
-            markers.intro?.let { intro ->
-                MenuEntry("Skip Intro to ${playbackTime(intro)}", icon = Icons.Rounded.FastForward, onClick = {
-                    open = false; player.skipIntro()
-                })
-            }
-            MenuDivider()
-            MenuEntry("Set Outro Start Here", detail = playbackTime(player.position), enabled = player.hasFile, onClick = {
-                open = false; player.setOutroStartHere()
-            })
-            markers.outro?.let { outro ->
-                MenuEntry("Skip Outro from ${playbackTime(outro)}", icon = Icons.Rounded.SkipNext, onClick = {
-                    open = false; player.skipOutro()
-                })
-            }
-            if (markers.intro != null || markers.outro != null) {
-                MenuDivider()
-                MenuEntry("Clear Markers", destructive = true, onClick = { open = false; player.clearMarkers() })
             }
         }
     }
@@ -600,14 +562,13 @@ fun MoreMenu(player: PlayerController, ui: PlayerUiState, host: PlayerHost, incl
 
 /**
  * Touch seek bar: drag anywhere on it to scrub, tap to jump. Shows the buffered range and
- * saved intro/outro markers, and grows while held.
+ * and grows while held.
  */
 @Composable
 fun SeekBar(
     position: Double,
     duration: Double,
     bufferedAhead: Double,
-    markers: Markers,
     enabled: Boolean,
     onScrubStart: (Double) -> Unit,
     onScrub: (Double) -> Unit,
@@ -621,7 +582,14 @@ fun SeekBar(
     val fraction = if (duration > 0) (position / duration).coerceIn(0.0, 1.0).toFloat() else 0f
     val bufferedFraction = if (duration > 0) ((position + bufferedAhead) / duration).coerceIn(0.0, 1.0).toFloat() else 0f
 
-    fun secondsAt(x: Float) = (x / width).coerceIn(0f, 1f) * duration
+    // The gesture outlives recompositions; read the latest values instead of restarting it.
+    val currentDuration by rememberUpdatedState(duration)
+    val currentEnabled by rememberUpdatedState(enabled)
+    val start by rememberUpdatedState(onScrubStart)
+    val move by rememberUpdatedState(onScrub)
+    val end by rememberUpdatedState(onScrubEnd)
+
+    fun secondsAt(x: Float) = (x / width).coerceIn(0f, 1f) * currentDuration
 
     Canvas(
         modifier
@@ -634,24 +602,26 @@ fun SeekBar(
                     onScrubStart(position); onScrubEnd(target.toDouble()); true
                 }
             }
-            .pointerInput(enabled, duration) {
-                if (!enabled) return@pointerInput
+            .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown()
+                    if (!currentEnabled) return@awaitEachGesture
                     down.consume()
                     dragging = true
                     var last = secondsAt(down.position.x)
-                    onScrubStart(last)
-                    onScrub(last)
-                    horizontalDrag(down.id) { change ->
-                        change.consume()
-                        if (change.positionChange() != Offset.Zero) {
+                    start(last)
+                    move(last)
+                    try {
+                        horizontalDrag(down.id) { change ->
+                            // Read the position before consuming: a consumed change reports no movement.
                             last = secondsAt(change.position.x)
-                            onScrub(last)
+                            move(last)
+                            change.consume()
                         }
+                    } finally {
+                        dragging = false
+                        end(last)
                     }
-                    dragging = false
-                    onScrubEnd(last)
                 }
             }
     ) {
@@ -663,12 +633,6 @@ fun SeekBar(
             drawRoundRect(Color.White.copy(alpha = 0.32f), Offset(0f, y - h / 2), Size(size.width * bufferedFraction, h), radius)
         }
         drawRoundRect(Color.White, Offset(0f, y - h / 2), Size(size.width * fraction, h), radius)
-        if (duration > 0) {
-            listOfNotNull(markers.intro, markers.outro).forEach { marker ->
-                val mx = (marker / duration).coerceIn(0.0, 1.0).toFloat() * size.width
-                drawRoundRect(Palette.cyan, Offset(mx - 1.5.dp.toPx(), y - h / 2 - 3.dp.toPx()), Size(3.dp.toPx(), h + 6.dp.toPx()), CornerRadius(2f, 2f))
-            }
-        }
         if (thumbRadius.toPx() > 0f) {
             drawCircle(Color.Black.copy(alpha = 0.25f), thumbRadius.toPx() + 1.5f, Offset(size.width * fraction, y + 1f))
             drawCircle(Color.White, thumbRadius.toPx(), Offset(size.width * fraction, y))
@@ -726,20 +690,4 @@ fun PreviewCard(frame: SeekPreview.Frame?, seconds: Double, modifier: Modifier =
             modifier = Modifier.padding(vertical = 6.dp)
         )
     }
-}
-
-/** Netflix-style contextual chip, shown before the intro marker and after the outro marker. */
-@Composable
-fun SkipChip(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    PillButton(
-        text = text,
-        icon = Icons.Rounded.FastForward,
-        background = Color.White.copy(alpha = 0.92f),
-        contentColor = Palette.playGlyph,
-        border = false,
-        height = 40.dp,
-        horizontalPadding = 16.dp,
-        modifier = modifier.shadow(10.dp, RoundedCornerShape(50)),
-        onClick = onClick
-    )
 }
