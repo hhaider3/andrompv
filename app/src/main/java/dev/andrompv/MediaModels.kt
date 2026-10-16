@@ -80,6 +80,21 @@ data class QueueGroup(
 
 data class Markers(val intro: Double? = null, val outro: Double? = null)
 
+data class TrackInfo(
+    val id: String,
+    val label: String,
+    val detail: String?,
+    val selected: Boolean
+)
+
+enum class VideoFit(val label: String) {
+    FIT("Fit to screen"),
+    FILL("Zoom to fill"),
+    STRETCH("Stretch");
+
+    fun next() = entries[(ordinal + 1) % entries.size]
+}
+
 data class SubtitleStyle(
     val scale: Double = 1.0,
     val outline: Double = 1.65,
@@ -117,6 +132,8 @@ class PlaybackQueue {
     val items = mutableListOf<QueueItem>()
     var currentId: String? = null
     var repeat = RepeatMode.OFF
+    /** Collections are expanded by default; only the user's collapsed choices persist. */
+    val collapsedGroups = mutableSetOf<String>()
     val current: QueueItem? get() = items.firstOrNull { it.id == currentId }
     val currentIndex: Int get() = items.indexOfFirst { it.id == currentId }
 
@@ -190,6 +207,16 @@ class PlaybackQueue {
         }
     }
 
+    /** Drag-and-drop: takes the target's place, landing after it when moving down and before it when moving up. */
+    fun moveOnto(draggedId: String, targetId: String) {
+        if (draggedId == targetId) return
+        val source = items.indexOfFirst { it.id == draggedId }
+        val target = items.indexOfFirst { it.id == targetId }
+        if (source < 0 || target < 0) return
+        val item = items.removeAt(source)
+        items.add(target, item)
+    }
+
     fun updateMetadata(id: String, metadata: MediaMetadata?, probeFailed: Boolean = false) {
         val index = items.indexOfFirst { it.id == id }
         if (index < 0) return
@@ -200,7 +227,24 @@ class PlaybackQueue {
         val oldIndex = items.indexOfFirst { it.id == currentId }
         val wasCurrent = currentId in ids
         items.removeAll { it.id in ids }
+        collapsedGroups.retainAll(items.mapTo(mutableSetOf()) { it.group })
         return if (wasCurrent) items.getOrNull(oldIndex.coerceAtMost(items.lastIndex)) else current
+    }
+
+    /** Replaces a torrent placeholder with its resolved files, keeping its place in the queue. */
+    fun replace(id: String, replacements: List<QueueItem>): Boolean {
+        val index = items.indexOfFirst { it.id == id }
+        if (index < 0) return false
+        items.removeAt(index)
+        val fresh = replacements.distinctBy { it.key }.filter { candidate -> items.none { it.key == candidate.key } }
+        items.addAll(index, fresh)
+        return true
+    }
+
+    fun clear() {
+        items.clear()
+        currentId = null
+        collapsedGroups.clear()
     }
 }
 
@@ -232,6 +276,19 @@ fun resumePosition(position: Double, duration: Double): Double? = when {
     position >= 5 -> position
     else -> null
 }
+
+fun speedLabel(speed: Double): String =
+    if (abs(speed - speed.roundToInt()) < 0.001) "${speed.roundToInt()}×"
+    else "${"%.2f".format(java.util.Locale.US, speed).trimEnd('0').trimEnd('.')}×"
+
+fun formatRate(bytesPerSecond: Long): String = when {
+    bytesPerSecond >= 1024 * 1024 -> "%.1f MB/s".format(java.util.Locale.US, bytesPerSecond / 1048576.0)
+    bytesPerSecond >= 1024 -> "${bytesPerSecond / 1024} KB/s"
+    else -> "$bytesPerSecond B/s"
+}
+
+/** "+1:05" style offsets for gesture feedback. */
+fun signedPlaybackTime(seconds: Double): String = (if (seconds < 0) "−" else "+") + playbackTime(abs(seconds))
 
 fun playbackTime(seconds: Double): String {
     val value = if (seconds.isFinite()) seconds.toLong().coerceAtLeast(0) else 0

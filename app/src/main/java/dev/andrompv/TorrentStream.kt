@@ -19,6 +19,17 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class TorrentStream(private val context: Context, private val configureSession: (SettingsPack) -> Unit = {}) {
     data class Opened(val items: List<QueueItem>, val url: String? = null)
+
+    /** One cached torrent: its metadata (named by source hash) and its downloaded files. */
+    data class Download(
+        val sourceHash: String,
+        val infoHash: String?,
+        val name: String,
+        val bytes: Long,
+        val totalBytes: Long,
+        val files: Int
+    )
+
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val requests = Executors.newFixedThreadPool(4)
@@ -296,10 +307,62 @@ class TorrentStream(private val context: Context, private val configureSession: 
         val current = handle
         if (bufferFailed || current?.isValid != true) return status
         val state = current.status()
-        return "Torrent ${(state.progress() * 100).toInt()}% · ${state.downloadRate() / 1024} KB/s · ${state.numPeers()} peers"
+        val index = selected?.torrentIndex
+        val fileProgress = if (index != null) {
+            val size = info?.files()?.fileSize(index) ?: 0L
+            if (size > 0) (current.fileProgress().getOrElse(index) { 0L } * 100 / size).toInt() else null
+        } else null
+        val percent = fileProgress ?: (state.progress() * 100).toInt()
+        val peers = state.numPeers()
+        return "$percent% · ${formatRate(state.downloadRate().toLong())} · $peers ${if (peers == 1) "peer" else "peers"}"
     }
-    fun downloadSummary(): String = directory.walkTopDown().filter(File::isFile)
-        .map { "${it.relativeTo(directory).path} (${it.length() / 1024} KB)" }.take(50).joinToString("\n").ifEmpty { "No downloaded files yet." }
+
+    fun downloads(): List<Download> {
+        val listed = mutableSetOf<String>()
+        val result = mutableListOf<Download>()
+        directory.listFiles { file -> file.isFile && file.extension == "torrent" }?.forEach { metadata ->
+            val torrent = runCatching { TorrentInfo(metadata) }.getOrNull()?.takeIf { it.isValid } ?: return@forEach
+            val hash = torrent.infoHash().toHex()
+            listed += hash
+            val folder = File(directory, hash)
+            result += Download(
+                sourceHash = metadata.nameWithoutExtension,
+                infoHash = hash,
+                name = torrent.name(),
+                bytes = folder.walkTopDown().filter(File::isFile).sumOf(File::length),
+                totalBytes = torrent.totalSize(),
+                files = torrent.numFiles()
+            )
+        }
+        // Folders whose metadata was lost still occupy space and can be removed.
+        directory.listFiles { file -> file.isDirectory && file.name !in listed }?.forEach { folder ->
+            result += Download(
+                sourceHash = "",
+                infoHash = folder.name,
+                name = folder.name,
+                bytes = folder.walkTopDown().filter(File::isFile).sumOf(File::length),
+                totalBytes = 0,
+                files = folder.walkTopDown().count(File::isFile)
+            )
+        }
+        return result.sortedByDescending(Download::bytes)
+    }
+
+    fun deleteDownload(download: Download) {
+        val hash = download.infoHash
+        if (hash != null) {
+            val active = info?.infoHash()?.toHex() == hash
+            session?.find(Sha1Hash.parseHex(hash))?.let { session?.remove(it) }
+            if (active) {
+                generation.incrementAndGet()
+                handle = null; info = null; activeSource = null; selected = null
+                closeSockets()
+            }
+            val folder = File(directory, hash)
+            check(!folder.exists() || folder.deleteRecursively()) { "Could not delete torrent files" }
+        }
+        if (download.sourceHash.isNotEmpty()) File(directory, "${download.sourceHash}.torrent").delete()
+    }
     fun deleteDownload(item: QueueItem) {
         val metadata = File(directory, "${sourceHash(item.uri)}.torrent")
         require(metadata.exists()) { "No cached metadata for this download" }
@@ -350,6 +413,6 @@ class TorrentStream(private val context: Context, private val configureSession: 
             require(file.path.startsWith(root.canonicalPath + File.separator)) { "Torrent path escapes its download directory" }
             return file
         }
-        private fun sourceHash(source: String) = MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).joinToString("") { "%02x".format(it) }
+        fun sourceHash(source: String) = MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 }

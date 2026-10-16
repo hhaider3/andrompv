@@ -1,7 +1,7 @@
 # andrompv
 
-A standalone **native Kotlin Android port of macmpv**. Android Views render the
-interface; a `SurfaceView` renders the actual **mpv 0.41 / FFmpeg** engine via JNI.
+A standalone **native Kotlin Android port of macmpv**. Jetpack Compose renders macmpv's
+glass interface; a `SurfaceView` renders the actual **mpv 0.41 / FFmpeg** engine via JNI.
 This is not a website, WebView, Electron app, or a renamed platform player.
 Native libtorrent replaces the macOS Node/WebTorrent CLI.
 
@@ -24,8 +24,8 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ```
 
 Build the installable development APK at `app/build/outputs/apk/debug/app-debug.apk`.
-The original local workspace also contains `dist/andrompv-debug.apk`; generated
-APKs, screenshots and build reports are not tracked in this source repository.
+The local workspace also keeps built APKs and screenshots in `dist/`; generated APKs,
+screenshots and build reports are not tracked in this source repository.
 Final results and unverified scenarios: [VERIFICATION.md](VERIFICATION.md).
 
 ```sh
@@ -33,132 +33,191 @@ Final results and unverified scenarios: [VERIFICATION.md](VERIFICATION.md).
 "$ANDROID_HOME/platform-tools/adb" shell am start -n dev.andrompv/.MainActivity
 ```
 
-Release compilation: `./gradlew :app:assembleRelease`. Release APKs are unsigned
-until you configure **your own** signing key. No signing secrets are included.
+Release compilation: `./gradlew :app:assembleRelease`. Release builds are shrunk
+with R8 (`app/proguard-rules.pro` keeps the libmpv and libtorrent4j JNI bindings) and
+are unsigned until you configure **your own** signing key. No signing secrets are included.
 Do not distribute this debug build as a store release; read the license notice.
 
 ## Features
 
-- Real embedded mpv/FFmpeg, OpenGL ES rendering, MediaCodec copy-back on physical
-  devices, and software decode on Android emulators (their copy-back codecs can
-  stall). Hardware decoding is a device capability, not guaranteed for every codec.
-- Multi-select local files through Android's Storage Access Framework; grants are
-  retained when the provider permits them. Open-with and share intents supported.
-- HTTP/HTTPS, RTSP, RTMP and HLS streams. Cleartext HTTP is deliberately permitted
-  for the source project's HTTP/RTMP features and loopback torrent server.
-- Persistent queue, current item, and sidebar visibility. Collapsible collections,
-  next/previous, long-press drag, move up/down, remove, clear and repeat off/all/one.
-  Manual next does not repeat one.
-- Play/pause, exact seeking, throttled scrub seeks, mute, volume, 0.25–4× speed,
-  fullscreen and measured subtitle clearance above controls.
-- Embedded audio/subtitle selection; external SRT/ASS/SSA/VTT files copied to app
-  cache so document URIs work with libass. Subtitle scale, outline, bold, color,
-  background opacity and sync delay; appearance settings persist.
-- Per-source playback resume (including original torrent file index), saved
-  intro/outro markers, and skip intro/outro actions.
-- Local thumbnail scrubbing with an independent silent decoder, coalesced work,
-  stale-result rejection, an 8 MiB cache and five-second idle decoder release.
-- PNG video screenshots through Android's save-document picker, no broad storage
-  permission. Screenshots contain the video surface, not the app's controls.
-- Metadata from mpv (duration, resolution, frame rate, codecs, channels, format,
-  size), without spawning ffprobe.
-- `.torrent`, `.magnet` and magnet URI resolution; multi-file media sorted in
-  natural order while preserving original file indexes. A random-token loopback
-  HTTP endpoint supports GET/HEAD and single byte ranges, verifies pieces before
-  reading sparse files, and uses piece deadlines around seeks. Metadata timeout:
-  60 seconds; piece buffering timeout: 30 seconds; at most four HTTP workers.
-- Torrent files stay in app-private `files/Torrents/<info-hash>/` and are rechecked
-  and reused on reopen. The selected file receives download priority; after it
-  completes, remaining media download one at a time in natural filename order.
-- Confirmed deletion of selected Android documents or app-owned downloads.
-  Clearing/removing queue entries alone never deletes files.
-- Audio focus, pause/download suspension on backgrounding, screen-awake only
-  during foreground playback, and native predictive-back handling.
+Everything macmpv does, rebuilt for touch, plus what Android players are expected to do.
+
+**From macmpv**
+
+- Real embedded mpv/FFmpeg rendering into a `SurfaceView` over OpenGL ES. MediaCodec
+  copy-back decoding on physical devices; software decoding on emulators, whose
+  copy-back codecs can stall. Hardware decoding is a device capability, not guaranteed
+  for every codec.
+- macmpv's dark glass interface, in Jetpack Compose with Material icons:
+  - a header with title and metadata badges (resolution • codec • FPS);
+  - a floating control bar;
+  - the "Play something beautiful" welcome view.
+  - Tablets and landscape get macmpv's single control row. Phones stack the transport
+    above a compact tool row.
+- Menus that tick the active choice:
+  - **Subtitles**: Off, tracks with language names, Open Subtitle File…, Subtitle Settings…;
+  - **Audio**: tracks with codec and channel layout;
+  - **Speed**: 0.25–3×;
+  - **Intro/outro markers**: set, skip and clear.
+- Live subtitle appearance panel: size, outline, background, bold, text color and sync
+  delay. Settings persist, and subtitles move clear of the controls by the measured overlap.
+- **Up Next** queue sidebar:
+  - collapsible playlist and torrent collections;
+  - drag-handle reordering;
+  - long-press menus (Play, Move Up/Down, Remove, Delete);
+  - watch-progress bars on rows, and a Now Playing card with metadata pills.
+  - Repeat off/all/one. Manual Next never repeats one item.
+- Seek previews like macmpv's: a silent decoder shows the nearest keyframe while you
+  drag, then sharpens to the exact frame once your finger rests (local files only).
+  The seek bar also shows the buffered range and marker ticks.
+- Per-file resume (500 most recent files, as in macmpv), with a "Resumed from 12:34 ·
+  Start over" prompt. Contextual **Skip Intro** / **Skip Outro** chips.
+- Local files through the Storage Access Framework (grants kept where the provider
+  allows), open-with and share intents, HTTP/HTTPS/RTSP/RTMP/HLS, and M3U playlists.
+- `.torrent`, `.magnet` and magnet links through native libtorrent:
+  - streamed over a random-token loopback HTTP endpoint, with natural-order episodes
+    keeping their original file indexes;
+  - the playing file gets download priority, then the rest download one at a time;
+  - downloads are reused on reopen.
+  - A **Torrent Downloads** sheet lists cached torrents, with sizes, and deletes them.
+- Screenshots of the decoded video saved to Pictures/andrompv; Android 9 uses the save
+  picker. The bundled FFmpeg has no PNG encoder for mpv, so the frame is copied from
+  the video surface.
+- macmpv's keyboard shortcuts on hardware keyboards (see Controls).
+
+**Android additions**
+
+- **Picture-in-picture**: enters automatically when you go Home during playback, with
+  back / play-pause / forward buttons. Closing the window pauses.
+- **Media session**: system media notification, lock-screen controls, and Bluetooth or
+  headset buttons. Built on Media3; the mpv controller stays the source of truth.
+- **Background audio** (optional): keeps the sound playing with a foreground media
+  notification. Video decoding is switched off until you return.
+- **Gestures**:
+  - double-tap the sides to seek (taps add up);
+  - double-tap the middle for full screen (macmpv's double-click);
+  - swipe sideways to seek, with a preview;
+  - swipe up and down on the right for volume, on the left for brightness;
+  - touch and hold for 2× speed;
+  - pinch to zoom to fill.
+- **Full screen** hides the system bars and turns the screen to match the video.
+  Fit / Zoom to fill / Stretch modes.
+- **Settings**:
+  - hardware decoding;
+  - high-quality scaling;
+  - resume;
+  - skip interval (5/10/15/30 s);
+  - picture-in-picture;
+  - background audio;
+  - swipe gestures;
+  - hold-for-speed;
+  - rotate in full screen.
+- Audio focus, ducking, and screen-on only while playing.
 
 ## Android adaptations and remaining differences
 
-This ports the player, not the macOS packaging/release scripts or marketing site.
-It is **not yet exact feature parity** with the desktop UI:
-
-- Queue reordering uses long-press drag onto another row, plus move up/down.
-- Android has no application-wide Trash: explicit deletion is permanent and
-  provider-dependent. Torrent downloads are app-private and removed on uninstall;
-  the downloads menu lists them rather than opening Finder.
-- Local document M3U playlists support absolute network URLs. Relative sibling
-  paths in a `content://` document cannot be accessed with a single-document grant;
-  select those files together instead. HLS manifests are passed intact to mpv.
-- Remote/torrent seek previews show timestamps only. Android's metadata retriever
-  cannot reliably bound/cancel network extraction, so it never receives network
-  sources. Local thumbnails depend on Android's decoder support, while playback
-  itself uses mpv's broader format support.
-- Playback and downloads pause when the app backgrounds. Background media
-  service, lock-screen notification, picture-in-picture, casting, and TV UI
-  are not implemented. Returning to the app requires tapping Play. For a
-  torrent, that tap reopens the local stream and resumes from the saved position.
-- Torrent metadata is cached and files survive restarts, but no serialized
-  libtorrent resume-state file is stored: existing pieces are rehashed on reopen.
-- BitTorrent/libtorrent is a different peer stack than desktop WebTorrent;
-  WebTorrent-only browser swarms are not promised to work.
-- Mac defaults/queues do not automatically migrate to Android. URI grants and
-  app-private persistence are Android-specific.
-- The native wrapper does not expose an END_FILE reason. Only the observed,
-  single-consumed `eof-reached` advances the queue; failed loads time out instead
-  of being mistaken for successful completion.
-- Share targets are video, audio, playlists, torrents, and text or magnet links.
-- Public magnet swarms, RTSP/RTMP cameras, every codec, physical-device hardware
-  decode and provider-specific deletion need real-device testing.
+- Android has no app-wide Trash: deleting is permanent and depends on the document
+  provider. Torrent downloads are app-private and removed on uninstall. The downloads
+  sheet replaces Show in Finder.
+- Local document M3U playlists support absolute network URLs only. Relative sibling paths
+  in a `content://` document cannot be opened with a single-document grant; select those
+  files together instead. HLS manifests are passed to mpv intact.
+- Remote and torrent seek previews show timestamps only: Android's metadata retriever
+  cannot reliably bound or cancel network reads.
+- Without background audio, leaving the app pauses playback and torrent downloads, as
+  macmpv does when it quits. A torrent then reopens its stream when you press Play.
+- **High-quality scaling** is on by default on devices and off on emulators. mpv's
+  default scalers render black or garbled frames on the emulator's SwiftShader GL. Turn
+  it off on a device that shows the same symptom, or to save battery.
+- Torrent metadata is cached and files survive restarts, but no libtorrent resume file
+  is stored: existing pieces are rehashed on reopen. BitTorrent/libtorrent is a
+  different peer stack from desktop WebTorrent, so WebTorrent-only browser swarms are
+  not expected to work.
+- macmpv's queues and settings do not migrate to Android.
+- Casting and an Android TV interface are not implemented.
 
 ## Controls
 
-- **Open**: choose files (including playlist/torrent files).
-- **URL**: enter a stream or magnet.
-- **Queue**: toggle the collection list; each `⋮` offers queue/file actions.
-- Player `⋮`: tracks, subtitles, speed, volume, repeat, markers, screenshots,
-  information, fullscreen and torrent downloads.
-- Tap video: play/pause; in fullscreen, show/hide controls.
-- Double-tap the left or right third of the video to seek ±10 seconds.
-  Double-tap the center to toggle fullscreen. Back exits fullscreen before closing the app.
-- On a phone-width screen the play controls sit on their own row. Subtitle, audio,
-  volume, and the other tools scroll on the row beneath them.
-- Hardware keyboard: Space/play-pause, arrows for ±10s, media next/previous,
-  `M` mute, `[`/`]` speed, `\` reset speed, `F` fullscreen, Esc exit fullscreen.
+- **Open** (header): choose files, including playlists and torrents. **Link** button:
+  open a stream or magnet link. **⋮**: picture-in-picture, video fit, repeat, media
+  info, torrent downloads, settings. On phones it also holds Mute and Save Screenshot.
+- Control bar:
+  - queue, subtitles, subtitle style, audio and markers;
+  - previous, back, play/pause, forward and next;
+  - mute and volume, speed, screenshot, full screen.
+- Tap the video to show or hide the controls. They hide after 3.5 s of playback and
+  stay up while paused or while a menu is open.
+- Hardware keyboard (as in macmpv):
+  - Space or K: play/pause;
+  - ← / →: seek by the skip interval;
+  - Ctrl/⌘ + ← / →: previous / next item;
+  - ↑ / ↓: volume;
+  - M: mute;
+  - `[` / `]` / `\`: speed down / up / reset;
+  - F: full screen;
+  - Esc: close panel or leave full screen;
+  - Ctrl+O: open media;
+  - Ctrl+Shift+O: open subtitles;
+  - Ctrl+Shift+S: screenshot;
+  - Ctrl+Alt+S: queue;
+  - Ctrl+L: open URL.
+  - Media keys work in the app and through the media session.
 
 ## Verification
 
 ```sh
-./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
 # Start an ARM64 or x86-64 emulator or connect a device first.
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-Ten JVM regressions cover completion, repeats, queue identity/reordering/removal,
-resume, natural sorting, stream validation, HLS handling, byte-range validation
-and torrent path traversal. Instrumented tests use bundled tiny fixtures and
-local loopback webseeds, not public peers. They exercise real libmpv playback,
-controls, subtitles, metadata, persistence, local preview extraction, native
-torrent resolution, exact HTTP ranges and offline downloaded-file reuse.
+Sixteen JVM tests cover:
 
-Test assets are included under `app/src/androidTest/assets/`, not shipped in the
-main APK. Regenerate with `python3 scripts/generate-test-fixtures.py` (requires
-ffmpeg with libx264). The torrent fixture's loopback port is 18765. Only the test
-session opts out of SSRF filtering for its controlled loopback webseed and disables
-DHT/LSD; production retains libtorrent's default SSRF protection.
+- completion and repeat modes;
+- queue identity, reordering (including drag), removal and torrent placeholder replacement;
+- resume pruning;
+- natural sorting;
+- stream validation and HLS handling;
+- byte ranges and torrent path traversal;
+- labels.
+
+Instrumented tests use bundled tiny fixtures and local loopback webseeds, not public
+peers. They drive the Compose UI (pause and seek buttons, keyboard full screen,
+landscape layout, the queue panel staying clear of the controls, and the subtitle
+panel) and exercise:
+
+- real libmpv playback and a nonblack rendered frame;
+- subtitles and speed;
+- a screenshot saved to MediaStore;
+- persistence;
+- local keyframe and exact preview extraction;
+- native torrent resolution, exact HTTP ranges and offline reuse of downloaded files.
+
+Test assets are under `app/src/androidTest/assets/` and are not shipped in the main APK.
+Regenerate them with `python3 scripts/generate-test-fixtures.py` (needs ffmpeg with
+libx264). The torrent fixture's loopback port is 18765. Only the test session opts out
+of SSRF filtering, for its controlled loopback webseed, and disables DHT/LSD.
+Production keeps libtorrent's default SSRF protection.
 
 ## Implementation map
 
 | macmpv concept | Android implementation |
 | --- | --- |
-| SwiftUI views / AppKit commands | `MainActivity.kt`, native Android widgets/pickers |
-| MPVEngine / OpenGL surface | `MPVEngine.kt`, libmpv JNI / SurfaceView |
-| MediaModels / PlaybackCompletion | `MediaModels.kt` |
-| PlayerModel queue / persistence | `PlaybackQueue`, `PlayerStore.kt` |
-| ffprobe metadata | observed mpv metadata properties |
-| SeekPreview | `SeekPreview.kt`, local MediaMetadataRetriever |
-| MagnetStream / torrent runtime/storage | `TorrentStream.kt`, native libtorrent / loopback server |
-| NSSavePanel screenshots | PixelCopy / Android create-document picker |
+| PlayerModel (+Queue, +Persistence) | `PlayerController.kt` (app-scoped, Compose state), `PlaybackQueue`, `PlayerStore.kt` |
+| ContentView / PlayerHeader / WelcomeView | `ui/PlayerScreen.kt` |
+| PlayerControls / SubtitleSettingsView | `ui/ControlsBar.kt`, `ui/Sheets.kt` |
+| QueueSidebar | `ui/QueuePanel.kt` |
+| MPVEngine / VideoSurface | `MPVEngine.kt` (libmpv JNI), `SurfaceView` in `MainActivity.kt` |
+| SeekPreview / SeekPreviewPopover | `SeekPreview.kt`, `PreviewCard` |
+| MagnetStream / torrent runtime and storage | `TorrentStream.kt`, native libtorrent and loopback server |
+| CinewaveApp menu commands | `MainActivity.kt` keyboard shortcuts |
+| (no macOS equivalent) | `PlaybackService.kt` (Media3 session), picture-in-picture in `MainActivity.kt` |
 
-Native operations are serialized off the main looper. mpv callbacks post
-snapshots to the UI rather than synchronously querying native state during layout.
+Native operations are serialized off the main looper. mpv callbacks update snapshot
+state on the main thread, with position updates coalesced to four a second (as in
+macmpv), so the UI never queries native state during composition. The controller
+outlives the activity, so picture-in-picture, the notification and background audio
+all drive the same player.
 
 ## Dependencies and licensing
 

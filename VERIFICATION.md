@@ -1,67 +1,107 @@
-# Verification — 2026-10-12
+# Verification — 2026-10-15 (andrompv 2.0.0)
 
-## Delivered artifact
+## Automated checks
 
-- `dist/andrompv-debug.apk` (97,307,308 bytes; about 93 MiB).
-- SHA-256: `b6a18a2e1d71494c39f3e6a496737720e8f1c6044cab018839243a48c649f7dd`.
-- Byte-identical to `app/build/outputs/apk/debug/app-debug.apk`.
-- `apksigner verify --print-certs`: passed (standard Android development/debug certificate).
-- `zipalign -c -P 16 4`: passed.
-- ELF program-header check: all 22 ARM64/x86-64 native libraries have LOAD
-  alignment of at least 16 KiB.
-- Application ID: `dev.andrompv`; minimum API 28, target API 36.
-- `dist/andrompv-emulator.png`: screen capture after opening the generated video
-  through the actual Android document picker.
+- `./gradlew :app:testDebugUnitTest`: **16 passed**, no failures or skips.
+- `./gradlew :app:lintDebug`: **0 errors**, 27 warnings. The warnings cover:
+  - newer dependency versions;
+  - KTX helper suggestions;
+  - `allowBackup` deprecation;
+  - the exported media session service (required for system media controllers);
+  - an advisory picture-in-picture hint (auto-enter is implemented);
+  - the `mipmap-anydpi-v26` qualifier (AAPT does not accept the adaptive icon without it).
 
-## Final checks
-
-- Kotlin debug and release compilation / APK assembly: **passed**.
-- JVM tests: **10 passed**, no failures/errors/skips.
-- Android lint: **0 errors, 32 warnings**. Remaining warnings concern English-only
-  programmatic UI text, newer dependency versions, backup configuration and
-  transitive manifest declarations. Compiler also reports legacy activity-result
-  and API-28-compatible system-bar APIs as deprecated. No lint baseline,
-  disabled check, assertion weakening or type suppression was added.
-- Connected instrumentation: **3 passed**, no failures/errors/skips.
-  Report: `app/build/reports/androidTests/connected/debug/index.html`.
-- Emulator: Pixel_10_Pro, Android 17/API 37, ARM64, **16,384-byte pages**.
-  The final run used 480×960 / 160 dpi to reduce software-renderer load on this
-  8 GB Mac. Earlier native runs at the AVD's 1280×2856 resolution intermittently
-  timed out loading video; these were not counted as successful runs.
-- The final full device test included a PixelCopy assertion that a rendered
-  video pixel was nonblack and a valid PNG was written, not merely a metadata
-  or initialization assertion.
-- Actual user interface smoke test: launch, Open → Downloads → video document,
-  `content://` fd playback, queue title, 24-second duration, playback position
-  progression, queue visibility, keyboard pause and screen capture checked.
-- macmpv Git status was compared to the initial state: no existing macOS files
-  were edited, staged, reverted or committed by this port.
+  No lint baseline or suppression was added.
+- `./gradlew :app:assembleDebug :app:assembleRelease`: **passed**.
+  - Debug APK: about 146 MiB, including the unshrunk Compose icon set and test manifest.
+  - Release APK: R8-minified, about 87 MiB, unsigned.
+- `./gradlew :app:connectedDebugAndroidTest`: **3 passed**, in three consecutive runs.
+  - Emulator: Pixel_10_Pro, Android 17 (API 37), ARM64, 16 KiB pages, 480×960 at 160 dpi,
+    SwiftShader GL.
 
 ## Instrumented behavior
 
-1. Local silent thumbnail extraction, bounded size and stale callback cancellation.
-2. Real libmpv local video/audio playback; observed dimensions/audio tracks;
-   rendered-video capture/PNG; UI pause/seek controls; external subtitles;
-   subtitle delay/speed; fullscreen controls; queue/resume/marker persistence.
-3. Native libtorrent file-table resolution and natural sort retaining original
-   indexes; controlled loopback webseed downloading; verified HTTP 206 byte range
-   and payload; entire selected-file payload; reuse without the webseed; HTTP 416.
+1. **Playback, controls and persistence**, driven through the Compose UI:
+   - real libmpv local playback, with a nonblack rendered video pixel;
+   - Pause and Forward buttons;
+   - track list and metadata;
+   - external subtitles, subtitle style and delay, and speed through the controller;
+   - exact seek;
+   - Save Screenshot written to MediaStore Pictures/andrompv and decoded as an image;
+   - F / Esc full screen;
+   - resume and marker persistence and queue restore;
+   - landscape: transport, queue and full-screen buttons inside the window;
+   - subtitle clearance lifting `sub-pos` above the controls;
+   - the queue panel floating over the video without overlapping the control bar;
+   - the subtitle panel fully on screen.
+2. **Seek preview**: keyframe extraction, an exact frame at the requested time, and
+   cancellation of stale results.
+3. **Torrent**:
+   - native libtorrent file table and natural sort that keeps original indexes;
+   - a loopback webseed download;
+   - an HTTP 206 byte range with its payload, and the whole selected file;
+   - reuse without the webseed;
+   - HTTP 416.
 
-The tests contact no public torrent swarm. Only the isolated test session permits
-its loopback webseed by disabling SSRF filtering and DHT/LSD. Production retains
-libtorrent's default SSRF protection. Torrent initialization uses libtorrent's
-full add_torrent_params loader, preserving trackers and webseed URLs outside the
-info dictionary.
+   No public swarm is contacted.
+
+## Manual emulator checks (adb-driven, screenshots inspected)
+
+- Welcome view; the phone (portrait) control layout; the single-row landscape layout;
+  header badges (`160 × 90 • H264 • 12 FPS`).
+- The More menu, with ticked video fit and repeat, and the Settings sheet.
+- The Open Network Stream dialog.
+- The queue panel with Now Playing card; the subtitle panel in landscape.
+- Double-tap seek ripple; volume swipe HUD; seek-bar scrub preview with thumbnail;
+  sideways swipe-seek preview.
+- Hardware keyboard: Space toggles on each press; → seeks; F enters full screen.
+- **Picture-in-picture**: entered automatically on Home while playing, and kept playing
+  in the window.
+- **Media notification**: Media3 posted it as a foreground-service transport
+  notification with three actions.
+- **Background audio** (setting on, picture-in-picture off):
+  - playback kept advancing after Home;
+  - mpv switched `vid=no`;
+  - the service ran in the foreground with type mediaPlayback;
+  - media Pause and Play keys worked from the background;
+  - video came back (`vid=auto`) on return.
+- Pressing Play at the end of a file restarts it.
+- Queue drag-to-reorder by the row handle: two standalone files swapped places.
+- The R8 release build (signed with the local debug key, only for this test) launched
+  and played video.
+
+## Emulator rendering finding
+
+mpv's default high-quality scalers presented black, and sometimes dotted, frames on
+the emulator's SwiftShader GL in about half of launches. The original andrompv 1.0 APK
+showed the same black output in the launch-then-open flow (4 of 4 runs).
+
+Each of these was ruled out:
+
+- URI type;
+- surface attach order (including mpv-android's force-window sequence);
+- direct rendering;
+- FBO format;
+- the shader cache;
+- the Compose layer (the window is transparent over the video).
+
+mpv's `fast` scaler set rendered on 6 of 6, then 8 of 8, launches. **High-quality
+scaling** therefore defaults to off on emulators and on for devices, and is a setting.
+
+A separate cause found along the way: a Compose `Modifier.blur` (RenderEffect) anywhere
+in the window also stopped the SurfaceView from showing through. The welcome glow now
+uses a radial gradient.
 
 ## Not claimed verified
 
-Physical phone hardware decode, all supported codec families, public magnet
-metadata/swarm behavior, WebTorrent-only browser peers, RTSP/RTMP servers,
-provider-specific permanent deletion, interrupted-download reuse across OS
-process death, screenshot save-picker writes to every provider, and store-release
-license/signing compliance require further testing. Reuse within a recreated
-stream selection is tested; the torrent offline check does not kill/relaunch the
-Android process. Release APK compiled but is **unsigned**.
+- Anything on a physical phone or tablet:
+  - hardware decoding;
+  - high-quality scaling on real GPUs;
+  - picture-in-picture and notification behavior across OEM skins.
+- Every codec family.
+- Public magnet and swarm behavior; WebTorrent-only peers; RTSP/RTMP servers.
+- Provider-specific permanent deletion.
+- Interrupted-download reuse after the OS kills the process.
+- Screenshot saving on Android 9 (save picker path).
+- Store-release signing and license compliance.
 
-See `README.md` for known desktop-parity differences. This is a working native
-player port, not a claim of exact parity with all macOS UI/packaging features.

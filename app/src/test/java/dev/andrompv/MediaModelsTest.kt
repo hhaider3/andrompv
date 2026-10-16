@@ -120,4 +120,52 @@ class MediaModelsTest {
             assertTrue(it, runCatching { TorrentStream.safeFile(root, it) }.isFailure)
         }
     }
+
+    @Test fun dragReorderLandsOnTheTargetInEitherDirection() {
+        val queue = PlaybackQueue(); val items = (0..3).map { QueueItem("https://example.com/$it", "$it") }
+        queue.enqueue(items)
+        queue.moveOnto(items[0].id, items[2].id)
+        assertEquals(listOf(items[1], items[2], items[0], items[3]), queue.items)
+        queue.moveOnto(items[3].id, items[1].id)
+        assertEquals(listOf(items[3], items[1], items[2], items[0]), queue.items)
+        queue.moveOnto(items[3].id, items[3].id)
+        assertEquals(listOf(items[3], items[1], items[2], items[0]), queue.items)
+    }
+
+    @Test fun torrentPlaceholderIsReplacedInPlaceWithoutDuplicates() {
+        val queue = PlaybackQueue()
+        val before = QueueItem("https://example.com/a", "a")
+        val torrent = QueueItem("magnet:?xt=urn:btih:abc", "show")
+        val after = QueueItem("https://example.com/b", "b")
+        queue.enqueue(listOf(before, torrent, after))
+        val episodes = listOf(1, 0).map { QueueItem(torrent.uri, "Episode $it", torrentIndex = it) }
+        assertTrue(queue.replace(torrent.id, episodes + episodes.first().copy(id = "duplicate")))
+        assertEquals(listOf("a", "Episode 1", "Episode 0", "b"), queue.items.map { it.title })
+        assertFalse(queue.replace("missing", episodes))
+    }
+
+    @Test fun removingAGroupForgetsItsCollapsedState() {
+        val queue = PlaybackQueue()
+        val a = QueueItem("https://example.com/a", "a", group = "g1"); val b = QueueItem("https://example.com/b", "b", group = "g2")
+        queue.enqueue(listOf(a, b)); queue.collapsedGroups += setOf("g1", "g2")
+        queue.remove(setOf(a.id))
+        assertEquals(setOf("g2"), queue.collapsedGroups)
+        queue.clear()
+        assertTrue(queue.items.isEmpty() && queue.collapsedGroups.isEmpty() && queue.currentId == null)
+    }
+
+    @Test fun resumePositionsKeepTheMostRecentEntries() {
+        val positions = org.json.JSONObject()
+        (0 until 6).forEach { positions.put("file$it", org.json.JSONObject().put("position", 30.0).put("updated", it.toLong())) }
+        positions.put("legacy", org.json.JSONObject().put("position", 30.0).put("updated", 0L))
+        PlayerStore.prunePositions(positions, 4)
+        assertEquals(setOf("file2", "file3", "file4", "file5"), positions.keys().asSequence().toSet())
+    }
+
+    @Test fun labelsForSpeedRatesAndOffsets() {
+        assertEquals("1×", speedLabel(1.0)); assertEquals("1.5×", speedLabel(1.5)); assertEquals("0.25×", speedLabel(0.25))
+        assertEquals("512 B/s", formatRate(512)); assertEquals("2 KB/s", formatRate(2048)); assertEquals("1.5 MB/s", formatRate(1572864))
+        assertEquals("+00:15", signedPlaybackTime(15.0)); assertEquals("−01:05", signedPlaybackTime(-65.0))
+        assertEquals(VideoFit.FILL, VideoFit.FIT.next()); assertEquals(VideoFit.FIT, VideoFit.STRETCH.next())
+    }
 }

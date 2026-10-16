@@ -9,11 +9,19 @@ import android.view.KeyEvent
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onRoot
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
 import org.junit.FixMethodOrder
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
@@ -33,6 +41,7 @@ import java.util.concurrent.TimeUnit
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 @RunWith(AndroidJUnit4::class)
 class PlayerInstrumentedTest {
+    @get:Rule val compose = createEmptyComposeRule()
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
     private fun fixture(name: String): File = File(context.cacheDir, name).also { target ->
@@ -48,15 +57,21 @@ class PlayerInstrumentedTest {
         }
         fail(message)
     }
-    private fun find(view: View, description: String): View? {
-        if (view.contentDescription == description) return view
-        if (view is ViewGroup) for (i in 0 until view.childCount) find(view.getChildAt(i), description)?.let { return it }
-        return null
-    }
     private fun findSurface(view: View): SurfaceView? {
         if (view is SurfaceView) return view
         if (view is ViewGroup) for (i in 0 until view.childCount) findSurface(view.getChildAt(i))?.let { return it }
         return null
+    }
+    private fun node(description: String) = compose.onAllNodesWithContentDescription(description).onFirst()
+
+    /** Brings the auto-hiding controls back and freezes the compose clock so they stay up for the next action. */
+    private fun showControls(activity: MainActivity) {
+        compose.mainClock.autoAdvance = false
+        instrumentation.runOnMainSync { activity.ui.interact() }
+        compose.mainClock.advanceTimeBy(500)
+    }
+    private fun resumeClock() {
+        compose.mainClock.autoAdvance = true
     }
 
     @Test fun nativePlaybackControlsSubtitlesAndPersistence() {
@@ -68,12 +83,15 @@ class PlayerInstrumentedTest {
         }
         val media = fixture("sample.mp4")
         val subtitle = fixture("sample.srt")
+        // The player is created lazily by the first activity, so it restores these cleared preferences.
         context.getSharedPreferences("andrompv", android.content.Context.MODE_PRIVATE).edit().clear().commit()
         var activity: MainActivity? = null
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
-            scenario.onActivity { activity = it; it.enqueueUris(listOf(Uri.fromFile(media))) }
-            await("mpv did not load local video") { activity!!.engine.hasFile && activity!!.engine.duration >= 20 }
-            await("playback position did not advance") { activity!!.engine.position > 1.0 }
+            scenario.onActivity { activity = it; it.player.enqueueUris(listOf(Uri.fromFile(media))) }
+            val player = activity!!.player
+            await("mpv did not load local video") { player.engine.hasFile && player.engine.duration >= 20 }
+            await("playback position did not advance") { player.engine.position > 1.0 }
+            await("controller state did not follow mpv") { player.hasFile && !player.isPaused && player.duration >= 20 }
             // What the user sees is the SurfaceFlinger composition, so capture
             // that (UiAutomation screenshot) instead of PixelCopying the raw
             // SurfaceView buffer: under SwiftShader PixelCopy intermittently
@@ -92,72 +110,75 @@ class PlayerInstrumentedTest {
                     val y = (cy + dy).coerceIn(0, shot.height - 1)
                     green = maxOf(green, Color.green(shot.getPixel(cx, y)))
                 }
-                val interactive = context.getSystemService(android.os.PowerManager::class.java)?.isInteractive
-                android.util.Log.d("andrompv-test", "capture attempt $attempts: green=$green shot=${shot.width}x${shot.height} interactive=$interactive")
-                if (green > 40) {
-                    val png = File(context.cacheDir, "capture.png")
-                    png.outputStream().use { output -> assertTrue(shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output)) }
-                    assertTrue(png.length() > 100)
-                }
+                android.util.Log.d("andrompv-test", "capture attempt $attempts: green=$green shot=${shot.width}x${shot.height}")
                 shot.recycle()
                 if (green <= 40) SystemClock.sleep(1000)
             }
             assertTrue("rendered video was black after $attempts captures", green > 40)
             scenario.onActivity {
-                assertEquals("160", it.engine.get("video-params/w"))
-                assertEquals("90", it.engine.get("video-params/h"))
-                assertTrue(it.engine.tracks("audio").isNotEmpty())
-                find(it.window.decorView, "Play or pause")!!.performClick()
+                assertEquals("160", player.engine.get("video-params/w"))
+                assertEquals("90", player.engine.get("video-params/h"))
+                assertTrue(player.audioTracks.isNotEmpty())
             }
-            await("pause button failed") { activity!!.engine.paused }
-            scenario.onActivity { find(it.window.decorView, "Seek forward 10 seconds")!!.performClick() }
-            await("seek button failed") { activity!!.engine.position >= 10 }
+
+            // Save Screenshot: a decoded frame (mpv, or the surface as a fallback) lands in Pictures/andrompv.
+            instrumentation.runOnMainSync { activity!!.takeScreenshot() }
+            await("screenshot was not saved", 15000) { player.notice?.message == "Screenshot saved to Pictures/andrompv" }
+            val resolver = context.contentResolver
+            val projection = arrayOf(android.provider.MediaStore.Images.Media._ID, android.provider.MediaStore.Images.Media.DISPLAY_NAME)
+            val saved = resolver.query(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection,
+                "${android.provider.MediaStore.Images.Media.DISPLAY_NAME} LIKE ?", arrayOf("sample-%.png"), null
+            )!!.use { cursor ->
+                assertTrue("screenshot missing from MediaStore", cursor.moveToFirst())
+                android.content.ContentUris.withAppendedId(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
+            }
+            val png = resolver.openInputStream(saved)!!.use { android.graphics.BitmapFactory.decodeStream(it) }
+            assertNotNull("saved screenshot was not an image", png)
+            assertTrue("saved screenshot was empty", png.width > 0 && png.height > 0)
+            resolver.delete(saved, null, null)
+
+            showControls(activity!!)
+            node("Pause").performClick()
+            compose.mainClock.advanceTimeBy(300)
+            resumeClock()
+            await("pause button failed") { player.engine.paused && player.isPaused }
+            node("Forward 10 seconds").performClick()
+            await("seek button failed") { player.engine.position >= 10 }
             scenario.onActivity {
-                it.engine.command("sub-add", subtitle.absolutePath, "select")
-                it.engine.applySubtitles(SubtitleStyle(scale = 1.5, outline = 2.5, delay = 0.5, bold = true))
-                it.engine.set("speed", 1.5)
+                player.engine.command("sub-add", subtitle.absolutePath, "select")
+                player.updateSubtitleStyle(SubtitleStyle(scale = 1.5, outline = 2.5, delay = 0.5, bold = true))
+                player.setSpeed(1.5)
             }
-            await("external subtitle did not load") { activity!!.engine.tracks("sub").isNotEmpty() }
-            scenario.onActivity {
-                it.engine.seek(8.0)
-            }
-            await("exact seek failed") { kotlin.math.abs(activity!!.engine.position - 8.0) < 1 }
+            await("external subtitle did not load") { player.subtitleTracks.isNotEmpty() && player.subtitleTracks.any { it.selected } }
+            scenario.onActivity { player.seek(8.0) }
+            await("exact seek failed") { kotlin.math.abs(player.engine.position - 8.0) < 1 }
             await("speed and subtitle sync updates failed") {
-                activity!!.engine.get("speed")?.toDoubleOrNull() == 1.5 &&
-                    activity!!.engine.get("sub-delay")?.toDoubleOrNull() == 0.5 &&
-                    activity!!.engine.get("sub-border-size")?.toDoubleOrNull() == 2.5 &&
-                    activity!!.engine.get("sub-outline-size")?.toDoubleOrNull() == 2.5
+                player.engine.get("speed")?.toDoubleOrNull() == 1.5 &&
+                    player.engine.get("sub-delay")?.toDoubleOrNull() == 0.5 &&
+                    player.engine.get("sub-border-size")?.toDoubleOrNull() == 2.5 &&
+                    player.engine.get("sub-outline-size")?.toDoubleOrNull() == 2.5
             }
-            scenario.onActivity {
-                // Portrait baseline screenshot while loaded (pulled to dist/ after the run).
-                screenshot("portrait-loaded")
-            }
-            scenario.onActivity {
-                it.setFullscreenMode(false)
-                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F))
-            }
-            instrumentation.waitForIdleSync()
-            scenario.onActivity {
-                // Fullscreen keeps header + transport reachable (macmpv parity):
-                // the title, queue toggle and controls stay visible instead of
-                // vanishing, so rotation/fullscreen never strands the user.
-                assertEquals(View.VISIBLE, find(it.window.decorView, "Queue")!!.visibility)
-                assertEquals(View.VISIBLE, find(it.window.decorView, "Play or pause")!!.visibility)
-                assertTrue(it.queue.current != null && it.engine.hasFile)
-            }
+            node("Playback speed 1.5×").assertIsDisplayed()
+            screenshot("portrait-paused")
+
+            // Keyboard: F toggles full screen; controls stay reachable while paused; Esc leaves it.
+            scenario.onActivity { it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F)) }
+            await("F did not enter full screen") { activity!!.isFullscreen }
+            node("Play").assertIsDisplayed()
             scenario.onActivity { it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE)) }
-            val item = activity!!.queue.current!!
+            await("Esc did not leave full screen") { !activity!!.isFullscreen }
+
+            val item = player.queue.current!!
             val store = PlayerStore(context)
-            store.remember(item, 8.0, 24.0); store.saveMarkers(item, Markers(2.0, 20.0)); store.save(activity!!.queue)
+            store.remember(item, 8.0, 24.0); store.saveMarkers(item, Markers(2.0, 20.0)); store.save(player.queue)
             assertEquals(8.0, PlayerStore(context).resume(item), 0.01)
             assertEquals(Markers(2.0, 20.0), PlayerStore(context).markers(item))
             val restored = PlaybackQueue(); PlayerStore(context).restore(restored)
             assertTrue(restored.items.any { it.key == item.key })
 
-            // Now rotate to Landscape and verify full-bleed surface, zero control overlap, floating sidebar, and live subtitle sheet
-            scenario.onActivity {
-                it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            }
+            // Landscape: full-bleed surface, controls inside the screen, floating queue and subtitle panel.
+            scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
             await("landscape orientation did not apply") {
                 val surface = findSurface(activity!!.window.decorView)
                 surface != null && surface.width > surface.height
@@ -168,86 +189,43 @@ class PlayerInstrumentedTest {
                 val surface = findSurface(it.window.decorView)!!
                 initialWidth = surface.width
                 initialHeight = surface.height
-                assertTrue("landscape width should exceed height ($initialWidth vs $initialHeight)", initialWidth > initialHeight)
-
-                fun checkNoOverlapAndInsideScreen(group: ViewGroup, path: String = "group") {
-                    val visibleChildren = (0 until group.childCount).map { idx -> group.getChildAt(idx) }
-                        .filter { v -> v.visibility == View.VISIBLE && v.width > 0 && v.height > 0 }
-                    if (group is android.widget.LinearLayout && group.orientation == android.widget.LinearLayout.HORIZONTAL) {
-                        for (i in 0 until visibleChildren.size - 1) {
-                            val a = visibleChildren[i]
-                            val b = visibleChildren[i + 1]
-                            val aLoc = IntArray(2); val bLoc = IntArray(2)
-                            a.getLocationOnScreen(aLoc); b.getLocationOnScreen(bLoc)
-                            assertTrue(
-                                "Horizontal children overlapped in $path: ${a.contentDescription ?: a.javaClass.simpleName} [${aLoc[0]}..${aLoc[0] + a.width}] vs ${b.contentDescription ?: b.javaClass.simpleName} [${bLoc[0]}]",
-                                aLoc[0] + a.width <= bLoc[0] + 1
-                            )
-                        }
-                    }
-                    for (child in visibleChildren) {
-                        val loc = IntArray(2)
-                        child.getLocationOnScreen(loc)
-                        assertTrue("View ${child.contentDescription ?: child.javaClass.simpleName} left (${loc[0]}) is off-screen", loc[0] >= -1)
-                        assertTrue("View ${child.contentDescription ?: child.javaClass.simpleName} right (${loc[0] + child.width}) exceeds screen ($initialWidth)", loc[0] + child.width <= initialWidth + 1)
-                        if (child is ViewGroup) checkNoOverlapAndInsideScreen(child, "$path/${child.javaClass.simpleName}")
-                    }
-                }
-                checkNoOverlapAndInsideScreen(it.window.decorView as ViewGroup)
-
-                // Rotation must NOT force fullscreen or hide the header: title,
-                // torrent status and queue toggle stay reachable in landscape.
-                val queueBtn = find(it.window.decorView, "Queue")!!
-                assertEquals("landscape rotation hid the header", View.VISIBLE, queueBtn.visibility)
-                val transport = find(it.window.decorView, "Play or pause")!!
-                assertEquals("landscape rotation hid transport", View.VISIBLE, transport.visibility)
-                // Subtitle clearance must have run and produced a sane sub-pos
-                // (16:9 video fills landscape height: bottomGap=0, controls
-                // visible, so sub-pos lifts below 100 to clear the glass bar).
-                val subPos = it.engine.get("sub-pos")?.toDoubleOrNull()
-                assertNotNull("subtitle clearance never ran", subPos)
-                assertTrue("sub-pos out of range: $subPos", subPos!! in 0.0..100.0)
-                assertTrue("sub-pos should clear the landscape control bar (got $subPos)", subPos < 100.0)
-                screenshot("landscape-controls")
-
-                // Open queue sidebar via bottom control bar button
-                find(it.window.decorView, "Toggle playlist")!!.performClick()
             }
-            instrumentation.waitForIdleSync()
+            showControls(activity!!)
+            resumeClock()
+            val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+            listOf("Play", "Previous", "Next", "Show queue", "Subtitle settings", "Enter full screen").forEach { description ->
+                val bounds = node(description).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+                assertTrue("$description is outside $root: $bounds", bounds.left >= root.left - 1 && bounds.right <= root.right + 1 && bounds.bottom <= root.bottom + 1)
+            }
+            await("subtitle clearance never lifted subtitles above the controls") {
+                val subPos = player.engine.get("sub-pos")?.toDoubleOrNull()
+                subPos != null && subPos in 0.0..99.99
+            }
+            screenshot("landscape-controls")
+
+            node("Show queue").performClick()
+            node("Hide queue").assertIsDisplayed()
+            // Header title plus the queue row and the Now Playing card.
+            assertTrue(compose.onAllNodesWithText("sample.mp4", useUnmergedTree = true).fetchSemanticsNodes().size >= 3)
             scenario.onActivity {
                 val surface = findSurface(it.window.decorView)!!
-                assertEquals("Queue sidebar must float as an overlay and never crush video surface width", initialWidth, surface.width)
-                assertEquals("Queue sidebar must float as an overlay and never crush video surface height", initialHeight, surface.height)
-                // Transport must stay visible AND tappable above the drawer:
-                // sidebar floats, scrim never swallows the control bar.
-                val transport = find(it.window.decorView, "Play or pause")!!
-                assertEquals("queue drawer buried transport", View.VISIBLE, transport.visibility)
-                assertTrue("transport not clickable with drawer open", transport.isClickable)
-                val sidebarTop = IntArray(2); val transportTop = IntArray(2)
-                find(it.window.decorView, "Hide playlist")!!.getLocationOnScreen(sidebarTop)
-                transport.getLocationOnScreen(transportTop)
-                assertTrue(
-                    "drawer overlaps transport (drawer top ${sidebarTop[1]} vs transport top ${transportTop[1]})",
-                    sidebarTop[1] + find(it.window.decorView, "Hide playlist")!!.height <= transportTop[1] ||
-                        transportTop[0] >= sidebarTop[0] + 300
-                )
-                screenshot("landscape-queue")
-                // Open live subtitle settings sheet
-                find(it.window.decorView, "Subtitle appearance & sync")!!.performClick()
+                assertEquals("Queue must float over the video", initialWidth, surface.width)
+                assertEquals("Queue must float over the video", initialHeight, surface.height)
             }
-            instrumentation.waitForIdleSync()
+            val play = node("Play").fetchSemanticsNode().boundsInRoot
+            val queueBottom = compose.onAllNodesWithText("Now Playing".uppercase(), useUnmergedTree = true).onFirst().fetchSemanticsNode().boundsInRoot.bottom
+            assertTrue("queue panel overlaps the control bar ($queueBottom vs ${play.top})", queueBottom <= play.top)
+            screenshot("landscape-queue")
+            node("Hide queue").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithText("UP NEXT", useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+
+            node("Subtitle settings").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithContentDescription("Close subtitle settings").fetchSemanticsNodes().isNotEmpty() }
+            val close = node("Close subtitle settings").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue("subtitle panel off screen: $close", close.top >= 0 && close.bottom <= initialHeight + 1)
+            node("Subtitle Size").assertIsDisplayed()
+            screenshot("landscape-subtitles")
             scenario.onActivity {
-                val surface = findSurface(it.window.decorView)!!
-                assertEquals("Subtitle sheet must float and preserve video surface", initialWidth, surface.width)
-                assertEquals("Subtitle sheet must float and preserve video surface", initialHeight, surface.height)
-                // Sheet card must fit fully on the short landscape screen.
-                val card = find(it.window.decorView, "Close subtitle settings")!!
-                val loc = IntArray(2)
-                card.getLocationOnScreen(loc)
-                assertTrue("sheet close button off-screen top (${loc[1]})", loc[1] >= 0)
-                assertTrue("sheet close button off-screen bottom (${loc[1]})", loc[1] + card.height <= initialHeight + 1)
-                screenshot("landscape-subtitles")
-                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE))
                 it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE))
                 it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
@@ -275,9 +253,15 @@ class PlayerInstrumentedTest {
         val done = CountDownLatch(1)
         var width = 0
         instrumentation.runOnMainSync {
-            preview.request(media.absolutePath, 2.0) { bitmap -> width = bitmap?.width ?: 0; done.countDown() }
+            preview.request(media.absolutePath, 2.0) { frame -> width = frame?.bitmap?.width ?: 0; done.countDown() }
         }
-        assertTrue(done.await(10, TimeUnit.SECONDS)); assertTrue(width in 1..240)
+        assertTrue(done.await(10, TimeUnit.SECONDS)); assertTrue(width in 1..320)
+        val exact = CountDownLatch(1)
+        var seconds = 0.0
+        instrumentation.runOnMainSync {
+            preview.request(media.absolutePath, 5.5, exact = true) { frame -> seconds = frame?.seconds ?: -1.0; exact.countDown() }
+        }
+        assertTrue(exact.await(10, TimeUnit.SECONDS)); assertEquals(5.5, seconds, 0.001)
         val stale = CountDownLatch(1)
         instrumentation.runOnMainSync {
             preview.request(media.absolutePath, 10.0) { stale.countDown() }

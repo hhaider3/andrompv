@@ -17,12 +17,6 @@ import java.util.concurrent.atomic.AtomicInteger
 /** libmpv's synchronous API must never block the main looper: MediaCodec and
  * surface initialization can themselves need that looper. UI reads snapshots. */
 class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.LogObserver {
-    data class TrackInfo(
-        val id: String,
-        val label: String,
-        val selected: Boolean
-    )
-
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     @Volatile private var mpv: MPVLib? = null
@@ -32,6 +26,10 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
     private val audio = context.getSystemService(AudioManager::class.java)
     private var resumeOnFocus = false
     private var attached = false
+    /** Video track to restore after audio-only background playback; null while video is enabled. */
+    private var suspendedVideoTrack: String? = null
+    /** Applied when libmpv is created; changes afterwards go through [setHardwareDecoding]. */
+    @Volatile var hardwareDecoding = preferHardwareDecoding()
     var onLoaded: () -> Unit = {}
     var onChanged: () -> Unit = {}
     var onEof: () -> Unit = {}
@@ -77,7 +75,7 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
                 "vo" to "gpu",
                 "gpu-context" to "android",
                 "opengl-es" to "yes",
-                "hwdec" to if (preferHardwareDecoding()) "mediacodec-copy" else "no",
+                "hwdec" to hwdecValue(hardwareDecoding),
                 "ao" to "audiotrack,opensles",
                 "idle" to "yes",
                 "keep-open" to "yes",
@@ -109,12 +107,14 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
             }
             engine.attachSurface(surface); attached = true
             engine.addObserver(this); engine.addLogObserver(this); engine.init()
+            qualityDefaults = FAST_RENDERING.keys.associateWith { engine.getPropertyString(it) }
+            applyRendering(engine)
             listOf("time-pos", "duration").forEach { engine.observeProperty(it, 5) }
             listOf("pause", "eof-reached", "paused-for-cache").forEach { engine.observeProperty(it, 3) }
             listOf(
-                "track-list", "video-params/w", "video-params/h", "video-params/aspect",
+                "demuxer-cache-time", "track-list", "video-params/w", "video-params/h", "video-params/aspect",
                 "video-out-params/aspect", "container-fps", "video-codec",
-                "audio-codec-name", "audio-params/channel-count", "file-format",
+                "audio-codec", "audio-codec-name", "audio-params/channel-count", "file-format",
                 "file-size", "media-title", "speed", "sub-delay", "aid", "sid",
                 "volume", "sub-scale", "sub-border-size", "sub-outline-size"
             ).forEach { engine.observeProperty(it, 1) }
@@ -123,6 +123,11 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
                 mpv!!.setPropertyString("android-surface-size", "${width}x${height}")
             }
             mpv!!.attachSurface(surface); attached = true; mpv!!.setPropertyString("vo", "gpu")
+        }
+        if (suspendedVideoTrack != null) {
+            // "auto" rather than the old track id: another file may have loaded meanwhile.
+            mpv?.setPropertyString("vid", "auto")
+            suspendedVideoTrack = null
         }
     }
 
@@ -133,14 +138,62 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
         }
     }
 
+    /** mpv's default scalers, captured at startup so [changeFastRendering] can restore them. */
+    private var qualityDefaults: Map<String, String?> = emptyMap()
+    /** Applied when libmpv is created; changes afterwards go through [changeFastRendering]. */
+    @Volatile var fastRendering = !preferHardwareDecoding()
+
+    fun changeFastRendering(fast: Boolean) {
+        fastRendering = fast
+        native { mpv?.let(::applyRendering) }
+    }
+
+    private fun applyRendering(engine: MPVLib) {
+        val values = if (fastRendering) FAST_RENDERING else qualityDefaults
+        values.forEach { (key, value) -> if (value != null) engine.setPropertyString(key, value) }
+    }
+
+    /** Releases the window surface without pausing; callers decide whether playback continues. */
     fun detach() {
-        pause(true)
         native {
             if (attached) {
                 mpv?.setPropertyString("vo", "null"); mpv?.detachSurface(); attached = false
             }
         }
     }
+
+    /** Audio-only background playback skips video decoding until a surface returns. */
+    fun disableVideo() = native {
+        val engine = mpv ?: return@native
+        if (suspendedVideoTrack != null) return@native
+        val current = engine.getPropertyString("vid")
+        if (current.isNullOrBlank() || current == "no") return@native
+        suspendedVideoTrack = current
+        engine.setPropertyString("vid", "no")
+    }
+
+    fun changeHardwareDecoding(enabled: Boolean) {
+        hardwareDecoding = enabled
+        set("hwdec", hwdecValue(enabled))
+    }
+
+    /** Writes the decoded frame (without subtitles or controls) at its native resolution. */
+    fun screenshot(target: java.io.File, callback: (Boolean) -> Unit) {
+        native {
+            target.delete()
+            mpv?.command(arrayOf("screenshot-to-file", target.absolutePath, "video"))
+            val written = target.isFile && target.length() > 0
+            main.post { if (!closed) callback(written) }
+        }
+    }
+
+    fun setVideoFit(fit: VideoFit) {
+        set("panscan", if (fit == VideoFit.FILL) 1.0 else 0.0)
+        set("keepaspect", if (fit == VideoFit.STRETCH) "no" else "yes")
+    }
+
+    /** Seconds of media buffered ahead of the playback position, as reported by the demuxer. */
+    val cacheTime: Double get() = get("demuxer-cache-time")?.toDoubleOrNull()?.takeIf { it.isFinite() } ?: 0.0
 
     fun load(source: String, resume: Double = 0.0) {
         val token = generation.incrementAndGet()
@@ -159,8 +212,14 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
             engine.command(arrayOf("stop"))
             descriptor?.close(); descriptor = null
             val resolved = if (source.startsWith("content:")) {
-                descriptor = context.contentResolver.openFileDescriptor(android.net.Uri.parse(source), "r")
-                    ?: error("This document is no longer readable; open it again")
+                descriptor = try {
+                    context.contentResolver.openFileDescriptor(android.net.Uri.parse(source), "r")
+                } catch (_: SecurityException) {
+                    // Files shared by other apps carry temporary access that ends with this process.
+                    error("Access to this file has ended. Open it again with Open Media.")
+                } catch (_: java.io.FileNotFoundException) {
+                    error("This file was moved or deleted.")
+                } ?: error("This document is no longer readable; open it again")
                 "fd://${descriptor!!.fd}"
             } else source
             engine.command(arrayOf("loadfile", resolved, "replace", "-1", "start=${resume.coerceAtLeast(0.0)}"))
@@ -207,6 +266,7 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
 
     fun stop() {
         generation.incrementAndGet(); acceptLoaded = false; completion.beginLoad(); hasFile = false; loading = false
+        properties.remove("track-list")
         native { mpv?.command(arrayOf("stop")); descriptor?.close(); descriptor = null }
         position = 0.0; duration = 0.0; paused = true
         audio.abandonAudioFocusRequest(focus); onChanged()
@@ -247,14 +307,32 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
             .map { obj ->
                 val id = obj.getInt("id").toString()
                 val title = obj.optString("title").takeIf(String::isNotBlank)
-                val lang = obj.optString("lang").takeIf(String::isNotBlank)?.uppercase()
+                val language = obj.optString("lang").takeIf { it.isNotBlank() && it != "und" }?.let(::languageName)
                 val codec = obj.optString("codec").takeIf(String::isNotBlank)?.uppercase()
                 val fallback = if (type == "audio") "Audio $id" else "Subtitle $id"
-                val primary = title ?: lang ?: fallback
-                val label = if (codec != null) "$primary · $codec" else primary
+                val label = when {
+                    title != null && language != null && !title.contains(language, ignoreCase = true) -> "$title · $language"
+                    else -> title ?: language ?: fallback
+                }
+                val channels = obj.optInt("demux-channel-count", 0).takeIf { it > 0 }?.let { channelLabel(it) }
+                val detail = listOfNotNull(
+                    codec,
+                    channels,
+                    "Default".takeIf { obj.optBoolean("default", false) },
+                    "Forced".takeIf { obj.optBoolean("forced", false) },
+                    "External".takeIf { obj.optBoolean("external", false) }
+                ).joinToString(" · ").ifEmpty { null }
                 val selected = obj.optBoolean("selected", false) || activeProp == id
-                TrackInfo(id, label, selected)
+                TrackInfo(id, label, detail, selected)
             }
+    }
+
+    /** Short codec name ("h264") of the active track, as macmpv's ffprobe badges show it. */
+    fun selectedCodec(type: String): String? {
+        val array = runCatching { JSONArray(get("track-list") ?: "[]") }.getOrDefault(JSONArray())
+        return (0 until array.length()).map { array.getJSONObject(it) }
+            .firstOrNull { it.optString("type") == type && it.optBoolean("selected", false) }
+            ?.optString("codec")?.takeIf(String::isNotBlank)
     }
 
     fun tracks(type: String): List<Pair<String, String>> =
@@ -316,8 +394,8 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
         val w = get("video-params/w")?.toIntOrNull()
         val h = get("video-params/h")?.toIntOrNull()
         val fps = get("container-fps")?.toDoubleOrNull()
-        val vCodec = get("video-codec")?.takeIf(String::isNotBlank)
-        val aCodec = get("audio-codec-name")?.takeIf(String::isNotBlank)
+        val vCodec = selectedCodec("video") ?: get("video-codec")?.takeIf(String::isNotBlank)
+        val aCodec = selectedCodec("audio") ?: get("audio-codec-name")?.takeIf(String::isNotBlank)
         val channels = get("audio-params/channel-count")?.toIntOrNull()
         val format = get("file-format")?.takeIf(String::isNotBlank)
         val size = get("file-size")?.toLongOrNull()
@@ -391,7 +469,39 @@ class MPVEngine(private val context: Context) : MPVLib.EventObserver, MPVLib.Log
     }
 
     companion object {
+        /** Emulator copy-back codecs can stall, so they default to software decoding. */
         fun preferHardwareDecoding(): Boolean =
             android.os.Build.HARDWARE !in setOf("ranchu", "goldfish")
+
+        /**
+         * mpv's built-in "fast" profile. The default high-quality scalers render black or
+         * garbled frames on the emulator's SwiftShader GL, and cost battery on weak GPUs.
+         */
+        private val FAST_RENDERING = mapOf(
+            "scale" to "bilinear",
+            "dscale" to "bilinear",
+            "dither" to "no",
+            "correct-downscaling" to "no",
+            "linear-downscaling" to "no",
+            "sigmoid-upscaling" to "no",
+            "hdr-compute-peak" to "no"
+        )
+
+        // Copy-back keeps decoded frames readable for mpv screenshots.
+        private fun hwdecValue(enabled: Boolean) = if (enabled) "mediacodec-copy" else "no"
+
+        fun languageName(code: String): String {
+            val locale = java.util.Locale.forLanguageTag(code.replace('_', '-'))
+            val name = locale.getDisplayLanguage(java.util.Locale.getDefault())
+            return if (name.isBlank() || name.equals(code, ignoreCase = true)) code.uppercase() else name
+        }
+
+        private fun channelLabel(count: Int) = when (count) {
+            1 -> "Mono"
+            2 -> "Stereo"
+            6 -> "5.1"
+            8 -> "7.1"
+            else -> "$count ch"
+        }
     }
 }

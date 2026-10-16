@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Glass sheen across the upper half, like the macmpv icon. -->
+    <path
+        android:fillColor="#14FFFFFF"
+        android:pathData="M18,18h72v30c-20,-10 -48,8 -72,22z" />
+    <!-- Rounded play triangle. -->
+    <path
+        android:fillColor="#F4F4F6"
+        android:strokeColor="#F4F4F6"
+        android:strokeWidth="5"
+        android:strokeLineJoin="round"
+        android:pathData="M33,38.5L57.5,54L33,69.5Z" />
+    <!-- Broadcast arcs. -->
+    <path
+        android:strokeColor="#C9CCD2"
+        android:strokeWidth="4.6"
+        android:strokeLineCap="round"
+        android:pathData="M62.4,42A18,18 0,0 1,62.4 66" />
+    <path
+        android:strokeColor="#A9ADB5"
+        android:strokeWidth="4.6"
+        android:strokeLineCap="round"
+        android:pathData="M69.1,35.9A27,27 0,0 1,69.1 72.1" />
+</vector>
