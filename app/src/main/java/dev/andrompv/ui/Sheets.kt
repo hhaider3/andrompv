@@ -26,7 +26,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -40,6 +40,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
@@ -79,6 +82,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.andrompv.MPVEngine
+import dev.andrompv.updater
+import dev.andrompv.UpdateState
+import dev.andrompv.AppUpdater
 import dev.andrompv.MediaSupport
 import dev.andrompv.PlayerController
 import dev.andrompv.PlayerSettings
@@ -106,7 +112,7 @@ fun SubtitleSettingsPanel(player: PlayerController, ui: PlayerUiState, host: Pla
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout))
+            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
     ) {
         val controls: Dp = with(density) { ui.controlsHeightPx.toDp() }
         val room = maxHeight - controls - 72.dp
@@ -257,6 +263,12 @@ private fun switchColors() = SwitchDefaults.colors(
 
 @Composable
 fun Sheets(player: PlayerController, ui: PlayerUiState) {
+    val updater = LocalContext.current.updater
+    val manual = updater.manualResult
+    LaunchedEffect(manual) {
+        manual?.let { message -> player.showNotice(message); updater.consumeManualResult() }
+    }
+    if (updater.dialogVisible) UpdateDialog(updater)
     when (val sheet = ui.sheet) {
         Sheet.OpenUrl -> OpenUrlDialog(player) { ui.sheet = null }
         Sheet.Info -> MediaInfoDialog(player) { ui.sheet = null }
@@ -278,6 +290,87 @@ fun Sheets(player: PlayerController, ui: PlayerUiState) {
             onDismiss = { ui.sheet = null }
         )
         null -> Unit
+    }
+}
+
+@Composable
+private fun UpdateDialog(updater: AppUpdater) {
+    val state = updater.state
+    val release = when (state) {
+        is UpdateState.Available -> state.release
+        is UpdateState.Downloading -> state.release
+        is UpdateState.Ready -> state.release
+        else -> { updater.dismissDialog(); return }
+    }
+    GlassDialog(
+        title = if (state is UpdateState.Ready) "Ready to install" else "Update available",
+        subtitle = "andrompv ${release.version} · you have ${updater.currentVersion}",
+        icon = Icons.Rounded.SystemUpdate,
+        onDismiss = updater::dismissDialog,
+        actions = {
+            when (state) {
+                is UpdateState.Available -> {
+                    TextButton(onClick = updater::skipThisVersion) { Text("Skip this version", color = Palette.textSecondary, fontSize = 13.sp) }
+                    TextButton(onClick = updater::dismissDialog) { Text("Later", color = Palette.textSecondary) }
+                    Spacer(Modifier.width(4.dp))
+                    PillButton(
+                        "Download${formatByteSize(release.apkSize)?.let { " · $it" } ?: ""}",
+                        icon = Icons.Rounded.Download,
+                        background = Color.White,
+                        contentColor = Palette.playGlyph,
+                        border = false,
+                        onClick = updater::download
+                    )
+                }
+                is UpdateState.Downloading -> TextButton(onClick = updater::cancelDownload) { Text("Cancel", color = Palette.textSecondary) }
+                is UpdateState.Ready -> {
+                    TextButton(onClick = updater::dismissDialog) { Text("Later", color = Palette.textSecondary) }
+                    Spacer(Modifier.width(4.dp))
+                    PillButton(
+                        "Install",
+                        icon = Icons.Rounded.SystemUpdate,
+                        background = Color.White,
+                        contentColor = Palette.playGlyph,
+                        border = false,
+                        onClick = updater::install
+                    )
+                }
+                else -> Unit
+            }
+        }
+    ) {
+        if (state is UpdateState.Downloading) {
+            val fraction = if (state.total > 0) (state.bytes.toFloat() / state.total).coerceIn(0f, 1f) else 0f
+            Text(
+                "Downloading… ${formatByteSize(state.bytes) ?: "0 B"}${formatByteSize(state.total)?.let { " of $it" } ?: ""}",
+                color = Color.White,
+                fontSize = 14.sp
+            )
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { fraction },
+                color = Color.White,
+                trackColor = Palette.fillStrong,
+                drawStopIndicator = {},
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+            )
+            Spacer(Modifier.height(8.dp))
+            Text("You can close this and keep using the app; the download continues.", color = Palette.textTertiary, fontSize = 11.sp)
+        } else {
+            if (state is UpdateState.Ready) {
+                Text(
+                    "The update was downloaded and checked. Android will ask you to confirm the install, and your queue and settings are kept.",
+                    color = Palette.textSecondary,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            if (release.notes.isNotBlank()) {
+                SectionCaption("What's new")
+                Spacer(Modifier.height(6.dp))
+                Text(release.notes, color = Palette.textSecondary, fontSize = 13.sp)
+            }
+        }
     }
 }
 
@@ -515,12 +608,41 @@ private fun SettingsDialog(player: PlayerController, onDismiss: () -> Unit) {
             update { it.copy(rotateInFullscreen = on) }
         }
 
+        SettingsGroup("Updates")
+        SettingSwitch(
+            "Check for updates when opening the app",
+            "Looks for a newer release on GitHub. Updates are only downloaded when you ask.",
+            settings.checkForUpdates
+        ) { on -> update { it.copy(checkForUpdates = on) } }
+        UpdateRow()
+
         Spacer(Modifier.height(12.dp))
         Text(
             "andrompv $version · Android port of macmpv · mpv, FFmpeg and libtorrent",
             color = Palette.textTertiary,
             fontSize = 11.sp
         )
+    }
+}
+
+@Composable
+private fun UpdateRow() {
+    val updater = LocalContext.current.updater
+    val state = updater.state
+    val (status, action) = when (state) {
+        UpdateState.Idle -> "Version ${updater.currentVersion}" to "Check now"
+        UpdateState.Checking -> "Checking…" to null
+        is UpdateState.Available -> "Version ${state.release.version} is available" to "View"
+        is UpdateState.Downloading -> "Downloading version ${state.release.version}…" to "View"
+        is UpdateState.Ready -> "Version ${state.release.version} is ready to install" to "Install"
+    }
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(status, color = Palette.textSecondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        if (action != null) {
+            TextButton(onClick = { if (state is UpdateState.Idle) updater.check(manual = true) else updater.showDialog() }) {
+                Text(action, color = Palette.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
     }
 }
 

@@ -27,9 +27,10 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -143,6 +144,8 @@ class PlayerUiState {
     var hud by mutableStateOf<Hud?>(null)
     var ripple by mutableStateOf<SeekRipple?>(null)
     var gestureSeek by mutableStateOf<Pair<Double, Double>?>(null)
+    /** Text of the one-time hold-for-speed hint, shown at the top for two seconds. */
+    var speedHint by mutableStateOf<String?>(null)
     var controlsHeightPx by mutableIntStateOf(0)
 
     fun interact() {
@@ -205,8 +208,8 @@ fun PlayerScreen(
         LaunchedEffect(showControls) {
             if (!showControls) player.setControlsInset(0)
         }
-        LaunchedEffect(host.isFullscreen, showControls, landscape, player.hasMedia) {
-            host.setSystemBarsHidden(host.isFullscreen || (landscape && player.hasMedia && !showControls))
+        LaunchedEffect(host.isFullscreen, landscape, player.hasMedia) {
+            host.setSystemBarsHidden(host.isFullscreen || (landscape && player.hasMedia))
         }
 
         GestureLayer(player, ui, host, Modifier.fillMaxSize())
@@ -235,7 +238,7 @@ fun PlayerScreen(
         Box(
             Modifier
                 .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout))
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
         ) {
             AnimatedVisibility(
                 showHeader,
@@ -246,11 +249,15 @@ fun PlayerScreen(
                 Header(player, ui, host, wide)
             }
 
+            // The bar sits almost on the screen edge: it borrows most of the gesture-navigation
+            // inset (the thin home pill) instead of floating above it.
+            val navInset = with(LocalDensity.current) { WindowInsets.systemBars.getBottom(this).toDp() }
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .padding(horizontal = if (wide) 20.dp else 10.dp)
-                    .padding(bottom = if (wide) 16.dp else 8.dp)
+                    .offset(y = (navInset - 12.dp).coerceIn(0.dp, navInset))
+                    .padding(bottom = 2.dp)
                     .widthIn(max = 960.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -271,6 +278,7 @@ fun PlayerScreen(
                 }
             }
 
+            SpeedHint(ui, Modifier.align(Alignment.TopCenter).padding(top = 64.dp, start = 16.dp, end = 16.dp))
             ErrorToast(player, Modifier.align(Alignment.TopCenter).padding(top = 64.dp, start = 16.dp, end = 16.dp))
         }
 
@@ -489,6 +497,29 @@ private fun NoticePill(player: PlayerController) {
 }
 
 @Composable
+private fun SpeedHint(ui: PlayerUiState, modifier: Modifier) {
+    val hint = ui.speedHint
+    LaunchedEffect(hint) {
+        if (hint != null) {
+            delay(2000)
+            if (ui.speedHint == hint) ui.speedHint = null
+        }
+    }
+    AnimatedVisibility(hint != null, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
+        Row(
+            Modifier
+                .glass(RoundedCornerShape(50), opacity = 0.8f, elevation = 6.dp)
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Rounded.FastForward, null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(hint.orEmpty(), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
 private fun HudOverlay(player: PlayerController, ui: PlayerUiState, modifier: Modifier) {
     val hud = ui.hud
     LaunchedEffect(hud?.id, hud?.sticky) {
@@ -595,10 +626,7 @@ private fun GestureLayer(player: PlayerController, ui: PlayerUiState, host: Play
                 detectTapGestures(
                     onPress = {
                         tryAwaitRelease()
-                        if (player.isHoldingSpeed) {
-                            player.endHoldSpeed()
-                            ui.hud = null
-                        }
+                        if (player.isHoldingSpeed) player.endHoldSpeed()
                     },
                     onTap = {
                         when {
@@ -630,7 +658,11 @@ private fun GestureLayer(player: PlayerController, ui: PlayerUiState, host: Play
                     onLongPress = {
                         if (player.settings.holdForSpeed && player.isPlaying) {
                             player.beginHoldSpeed()
-                            ui.hud = Hud(Icons.Rounded.FastForward, "${dev.andrompv.speedLabel((player.speed * 2).coerceAtMost(4.0))} speed", sticky = true)
+                            // Explained once, the first time it is used; afterwards it is silent.
+                            if (!player.store.speedHintShown) {
+                                player.store.speedHintShown = true
+                                ui.speedHint = "Playing at ${dev.andrompv.speedLabel((player.speed * 2).coerceAtMost(4.0))} while you hold"
+                            }
                         }
                     }
                 )

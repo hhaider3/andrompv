@@ -1,4 +1,4 @@
-# Verification — 2026-10-15 (andrompv 2.1.0)
+# Verification — 2026-10-15 (andrompv 2.2.0)
 
 ## Automated checks
 
@@ -70,7 +70,7 @@
 - The R8 release build (signed with the local debug key, only for this test) launched
   and played video.
 
-## Physical phone checks (2.1.0)
+## Physical phone checks (2.1.0 fixes)
 
 OnePlus CPH2749, Android 16 (API 36), 1272×2772 at 560 dpi. Checked by hand over adb,
 without the instrumented suite (it uninstalls the app, which would wipe the owner's data).
@@ -88,6 +88,22 @@ without the instrumented suite (it uninstalls the app, which would wipe the owne
 - The landscape control row fits a phone (screenshot in ⋮, no volume slider), with
   rotate at the far right.
 - Hardware keyboard: Space toggles playback even after Tab moves focus into the controls.
+
+## Update check, download and install (emulator, real GitHub release)
+
+A build posing as 2.0.0 (`-PappVersionName=2.0.0 -PappVersionCode=3`) was pointed at the
+real v2.1.0 release:
+
+- On launch it found 2.1.0 and showed the release notes and size.
+- It downloaded all 152,901,320 bytes with live progress, matched the SHA-256, and
+  confirmed the file was a newer andrompv.
+- **Install** first sent the app to Android's "Install unknown apps" screen. After allowing
+  it, Android's installer accepted the update ("Update this app?"), and the installed
+  version became 2.1.0 (code 4). Android's own check that the signing key matches passed.
+- A build already at 2.1.0 shows no prompt and Settings reports "Version 2.1.0 · Check now".
+  The leftover download is deleted at the next launch.
+- Not tested: a checksum mismatch or a truncated download on a live connection (both throw
+  and discard the file in the code), and updating on a physical phone.
 
 ## Emulator rendering finding
 

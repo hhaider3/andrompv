@@ -16,7 +16,8 @@ data class PlayerSettings(
     val swipeGestures: Boolean = true,
     val holdForSpeed: Boolean = true,
     val rememberPosition: Boolean = true,
-    val rotateInFullscreen: Boolean = true
+    val rotateInFullscreen: Boolean = true,
+    val checkForUpdates: Boolean = true
 ) {
     companion object {
         val seekSteps = listOf(5, 10, 15, 30)
@@ -36,6 +37,11 @@ class PlayerStore(context: Context) {
     var volume: Double
         get() = preferences.getFloat("volume", 80f).toDouble().coerceIn(0.0, 100.0)
         set(value) { preferences.edit().putFloat("volume", value.toFloat()).apply() }
+
+    /** The "2× speed" hint is explained once, the first time hold-for-speed is used. */
+    var speedHintShown: Boolean
+        get() = preferences.getBoolean("hint.holdSpeed.v1", false)
+        set(value) { preferences.edit().putBoolean("hint.holdSpeed.v1", value).apply() }
 
     var sidebarVisible: Boolean
         get() = preferences.getBoolean("sidebar.visible.v1", false)
@@ -80,7 +86,8 @@ class PlayerStore(context: Context) {
                 swipeGestures = o.optBoolean("swipeGestures", defaults.swipeGestures),
                 holdForSpeed = o.optBoolean("holdForSpeed", defaults.holdForSpeed),
                 rememberPosition = o.optBoolean("rememberPosition", defaults.rememberPosition),
-                rotateInFullscreen = o.optBoolean("rotateInFullscreen", defaults.rotateInFullscreen)
+                rotateInFullscreen = o.optBoolean("rotateInFullscreen", defaults.rotateInFullscreen),
+                checkForUpdates = o.optBoolean("checkForUpdates", defaults.checkForUpdates)
             )
         }
         set(s) {
@@ -96,6 +103,7 @@ class PlayerStore(context: Context) {
                     .put("holdForSpeed", s.holdForSpeed)
                     .put("rememberPosition", s.rememberPosition)
                     .put("rotateInFullscreen", s.rotateInFullscreen)
+                    .put("checkForUpdates", s.checkForUpdates)
                     .toString()
             ).apply()
         }

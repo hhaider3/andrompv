@@ -11,8 +11,9 @@ android {
         applicationId = "dev.andrompv"
         minSdk = 28
         targetSdk = 36
-        versionCode = 4
-        versionName = "2.1.0"
+        // -PappVersionCode / -PappVersionName let a build pose as an older release, to test updating.
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 5
+        versionName = (project.findProperty("appVersionName") as String?) ?: "2.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

@@ -145,6 +145,7 @@ class MainActivity : ComponentActivity(), PlayerHost {
     override fun onStart() {
         super.onStart()
         player.onUiShown()
+        if (player.settings.checkForUpdates) updater.checkOnLaunch()
     }
 
     override fun onStop() {

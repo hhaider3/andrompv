@@ -128,8 +128,8 @@ fun ControlsBar(
         Column(
             Modifier
                 .fillMaxWidth()
-                .glass(RoundedCornerShape(22.dp))
-                .padding(start = 16.dp, end = 16.dp, top = if (wide) 12.dp else 10.dp, bottom = if (wide) 12.dp else 8.dp)
+                .glass(RoundedCornerShape(20.dp), opacity = 0.52f, elevation = 8.dp)
+                .padding(start = 16.dp, end = 16.dp, top = if (wide) 7.dp else 6.dp, bottom = if (wide) 7.dp else 5.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TimeLabel(scrubSeconds ?: player.position)
@@ -160,7 +160,7 @@ fun ControlsBar(
                 )
                 TimeLabel(player.duration)
             }
-            Spacer(Modifier.height(if (wide) 8.dp else 4.dp))
+            Spacer(Modifier.height(if (wide) 3.dp else 1.dp))
             if (wide) WideButtons(player, ui, host) else CompactButtons(player, ui, host)
         }
 
@@ -239,15 +239,15 @@ private fun CompactButtons(player: PlayerController, ui: PlayerUiState, host: Pl
                 .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            QueueToggle(player, ui, size = 38)
-            SubtitleMenu(player, ui, host, size = 38)
-            SubtitleStyleButton(player, ui, size = 38)
-            AudioMenu(player, ui, size = 38)
+            QueueToggle(player, ui, size = 34)
+            SubtitleMenu(player, ui, host, size = 34)
+            SubtitleStyleButton(player, ui, size = 34)
+            AudioMenu(player, ui, size = 34)
             Spacer(Modifier.weight(1f).widthIn(min = 4.dp))
             SpeedMenu(player, ui)
-            FullscreenButton(ui, host, size = 38)
-            MoreMenu(player, ui, host, includeTools = true, size = 38)
-            RotateButton(ui, host, size = 38)
+            FullscreenButton(ui, host, size = 34)
+            MoreMenu(player, ui, host, includeTools = true, size = 34)
+            RotateButton(ui, host, size = 34)
         }
     }
 }
@@ -262,11 +262,11 @@ private fun Transport(player: PlayerController, ui: PlayerUiState, compact: Bool
         PlayerIconButton(Icons.Rounded.SkipPrevious, "Previous", enabled = player.canGoPrevious, iconSize = 26.dp) {
             ui.interact(); player.previous()
         }
-        PlayerIconButton(replayIcon(step), "Back $step seconds", enabled = player.hasFile, size = 44.dp, iconSize = 26.dp) {
+        PlayerIconButton(replayIcon(step), "Back $step seconds", enabled = player.hasFile, size = 40.dp, iconSize = 24.dp) {
             ui.interact(); player.seekBy(-step.toDouble())
         }
-        PlayButton(player, ui, size = if (compact) 56 else 50)
-        PlayerIconButton(forwardIcon(step), "Forward $step seconds", enabled = player.hasFile, size = 44.dp, iconSize = 26.dp) {
+        PlayButton(player, ui, size = if (compact) 48 else 44)
+        PlayerIconButton(forwardIcon(step), "Forward $step seconds", enabled = player.hasFile, size = 40.dp, iconSize = 24.dp) {
             ui.interact(); player.seekBy(step.toDouble())
         }
         PlayerIconButton(Icons.Rounded.SkipNext, "Next", enabled = player.canGoNext, iconSize = 26.dp) {
@@ -290,7 +290,7 @@ fun forwardIcon(step: Int): ImageVector = when (step) {
 }
 
 @Composable
-fun PlayButton(player: PlayerController, ui: PlayerUiState, size: Int = 50) {
+fun PlayButton(player: PlayerController, ui: PlayerUiState, size: Int = 44) {
     val playing = !player.isPaused
     Box(
         Modifier
@@ -312,7 +312,7 @@ fun PlayButton(player: PlayerController, ui: PlayerUiState, size: Int = 50) {
 }
 
 @Composable
-private fun QueueToggle(player: PlayerController, ui: PlayerUiState, size: Int = 40) {
+private fun QueueToggle(player: PlayerController, ui: PlayerUiState, size: Int = 36) {
     PlayerIconButton(
         Icons.Rounded.ViewSidebar,
         if (player.isSidebarVisible) "Hide queue" else "Show queue",
@@ -325,7 +325,7 @@ private fun QueueToggle(player: PlayerController, ui: PlayerUiState, size: Int =
 }
 
 @Composable
-private fun SubtitleStyleButton(player: PlayerController, ui: PlayerUiState, size: Int = 40) {
+private fun SubtitleStyleButton(player: PlayerController, ui: PlayerUiState, size: Int = 36) {
     PlayerIconButton(
         Icons.Rounded.TextFields,
         "Subtitle settings",
@@ -339,7 +339,7 @@ private fun SubtitleStyleButton(player: PlayerController, ui: PlayerUiState, siz
 }
 
 @Composable
-private fun MuteButton(player: PlayerController, ui: PlayerUiState, size: Int = 40) {
+private fun MuteButton(player: PlayerController, ui: PlayerUiState, size: Int = 36) {
     val silent = player.isMuted || player.volume <= 0.0
     PlayerIconButton(
         if (silent) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
@@ -376,7 +376,7 @@ fun ThinSlider(
         onValueChange = onValueChange,
         valueRange = valueRange,
         colors = colors,
-        modifier = modifier.height(32.dp),
+        modifier = modifier.height(28.dp),
         thumb = {
             Box(
                 Modifier
@@ -407,7 +407,7 @@ fun whiteSliderColors() = SliderDefaults.colors(
 )
 
 @Composable
-private fun FullscreenButton(ui: PlayerUiState, host: PlayerHost, size: Int = 40) {
+private fun FullscreenButton(ui: PlayerUiState, host: PlayerHost, size: Int = 36) {
     PlayerIconButton(
         if (host.isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
         if (host.isFullscreen) "Exit full screen" else "Enter full screen",
@@ -419,7 +419,7 @@ private fun FullscreenButton(ui: PlayerUiState, host: PlayerHost, size: Int = 40
 }
 
 @Composable
-private fun RotateButton(ui: PlayerUiState, host: PlayerHost, size: Int = 40) {
+private fun RotateButton(ui: PlayerUiState, host: PlayerHost, size: Int = 36) {
     PlayerIconButton(Icons.Rounded.ScreenRotation, "Rotate screen", size = size.dp, iconSize = 22.dp) {
         ui.interact(); host.rotateScreen()
     }
@@ -435,7 +435,7 @@ fun HoldControls(ui: PlayerUiState, active: Boolean) {
 }
 
 @Composable
-private fun SubtitleMenu(player: PlayerController, ui: PlayerUiState, host: PlayerHost, size: Int = 40) {
+private fun SubtitleMenu(player: PlayerController, ui: PlayerUiState, host: PlayerHost, size: Int = 36) {
     var open by remember { mutableStateOf(false) }
     HoldControls(ui, open)
     val active = player.subtitleTracks.firstOrNull { it.selected }
@@ -464,7 +464,7 @@ private fun SubtitleMenu(player: PlayerController, ui: PlayerUiState, host: Play
 }
 
 @Composable
-private fun AudioMenu(player: PlayerController, ui: PlayerUiState, size: Int = 40) {
+private fun AudioMenu(player: PlayerController, ui: PlayerUiState, size: Int = 36) {
     var open by remember { mutableStateOf(false) }
     HoldControls(ui, open)
     Box {
@@ -497,7 +497,7 @@ private fun SpeedMenu(player: PlayerController, ui: PlayerUiState) {
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier
                 .padding(horizontal = 2.dp)
-                .height(32.dp)
+                .height(28.dp)
                 .widthIn(min = 42.dp)
                 .clip(RoundedCornerShape(50))
                 .background(Palette.fill)
@@ -517,7 +517,7 @@ private fun SpeedMenu(player: PlayerController, ui: PlayerUiState) {
 }
 
 @Composable
-fun MoreMenu(player: PlayerController, ui: PlayerUiState, host: PlayerHost, includeTools: Boolean, size: Int = 40) {
+fun MoreMenu(player: PlayerController, ui: PlayerUiState, host: PlayerHost, includeTools: Boolean, size: Int = 36) {
     var open by remember { mutableStateOf(false) }
     HoldControls(ui, open)
     Box {
@@ -593,7 +593,7 @@ fun SeekBar(
 
     Canvas(
         modifier
-            .height(32.dp)
+            .height(28.dp)
             .onGloballyPositioned { width = it.size.width.toFloat().coerceAtLeast(1f) }
             .semantics {
                 contentDescription = "Playback position"

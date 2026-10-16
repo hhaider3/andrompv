@@ -112,7 +112,16 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
   - background audio;
   - swipe gestures;
   - hold-for-speed;
-  - rotate in full screen.
+  - rotate in full screen;
+  - check for updates when opening the app.
+- **Updates from GitHub.** Each time you open the app it checks this repository's latest
+  release (at most every ten minutes). A newer one shows its release notes, and you choose
+  **Download** (with live progress), **Later**, or **Skip this version**. The download is
+  checked against the release's SHA-256 and must be a newer build of this same app before
+  **Install** hands it to Android's installer. Android also refuses it unless it is signed
+  with the same key as the installed app, and keeps your queue and settings. Nothing is
+  downloaded or installed without a tap. The first install asks you to allow installs from
+  andrompv. Turn the check off, or run it by hand, in Settings → Updates.
 - Audio focus, ducking, and screen-on only while playing.
 
 ## Android adaptations and remaining differences
@@ -135,6 +144,9 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
   different peer stack from desktop WebTorrent, so WebTorrent-only browser swarms are
   not expected to work.
 - macmpv's intro/outro markers are not part of the Android port.
+- Updates are only for builds installed outside an app store, using the public GitHub
+  releases of `hhaider3/andrompv`. A fork must change `Updates.REPOSITORY`. Versions before
+  the one that introduced the updater need one manual install to get it.
 - macmpv's queues and settings do not migrate to Android.
 - Casting and an Android TV interface are not implemented.
 
@@ -175,7 +187,7 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-Eighteen JVM tests cover:
+Twenty-three JVM tests cover:
 
 - completion and repeat modes;
 - queue identity, reordering (including drag), removal, torrent placeholder replacement
@@ -183,6 +195,8 @@ Eighteen JVM tests cover:
 - resume pruning;
 - natural sorting;
 - stream validation, HLS handling and magnet display names;
+- update checks: version comparison, release parsing (digest and checksum-file fallback,
+  drafts, pre-releases) and release-note trimming;
 - byte ranges and torrent path traversal;
 - labels.
 

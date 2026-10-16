@@ -40,7 +40,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -134,7 +134,7 @@ fun QueuePanel(player: PlayerController, ui: PlayerUiState, host: PlayerHost, wi
             exit = slideOutHorizontally { -it } + fadeOut()
         ) {
             // Like macmpv, the sidebar stops above the control bar while the controls are up.
-            val insets = WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+            val insets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
             val density = LocalDensity.current
             val navigation = with(density) { insets.getBottom(this).toDp() }
             val controls = with(density) { ui.controlsHeightPx.toDp() }
