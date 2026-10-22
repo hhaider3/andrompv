@@ -1,5 +1,6 @@
 package dev.andrompv
 
+import org.json.JSONObject
 import java.net.URI
 import java.util.UUID
 import kotlin.math.abs
@@ -76,6 +77,68 @@ data class QueueGroup(
     val items: List<QueueItem>
 ) {
     val isCollapsible: Boolean get() = kind != GroupKind.STANDALONE || items.size > 1
+}
+
+/** What was last saved of one torrent media file. */
+data class TorrentFileProgress(
+    val downloaded: Long,
+    val done: Boolean,
+    /** Estimated from the disk space the file occupies; libtorrent has not verified it, so it is never trusted for direct playback. */
+    val measuredOnDisk: Boolean = false
+)
+
+/** Saved progress of a torrent's media files, keyed by file index. */
+data class TorrentProgress(val infoHash: String?, val files: Map<Int, TorrentFileProgress>) {
+    fun toJson(): String = JSONObject()
+        .put("infoHash", infoHash ?: JSONObject.NULL)
+        .put("files", JSONObject().also { out ->
+            files.forEach { (index, file) ->
+                out.put(index.toString(), JSONObject().put("downloaded", file.downloaded).put("done", file.done))
+            }
+        })
+        .toString()
+
+    companion object {
+        fun parse(json: String): TorrentProgress? {
+            val root = runCatching { JSONObject(json) }.getOrNull() ?: return null
+            val saved = root.optJSONObject("files") ?: return null
+            val files = mutableMapOf<Int, TorrentFileProgress>()
+            saved.keys().forEach { key ->
+                val index = key.toIntOrNull() ?: return@forEach
+                val entry = saved.optJSONObject(key) ?: return@forEach
+                files[index] = TorrentFileProgress(entry.optLong("downloaded").coerceAtLeast(0), entry.optBoolean("done"))
+            }
+            return TorrentProgress(root.optString("infoHash").takeIf { it.length == 40 }, files)
+        }
+    }
+}
+
+sealed interface TorrentDownloadState {
+    data class Downloading(val percent: Int) : TorrentDownloadState
+    /** Fully saved; playback reads the file from disk. */
+    data object Local : TorrentDownloadState
+
+    val label: String
+        get() = when (this) {
+            is Downloading -> "$percent%"
+            Local -> "LOCAL"
+        }
+}
+
+/** 100% is reserved for verified files, which read as local instead. */
+fun torrentDownloadState(item: QueueItem, progress: TorrentProgress?): TorrentDownloadState? {
+    val index = item.torrentIndex ?: return null
+    val saved = progress?.files?.get(index) ?: return null
+    if (saved.done) return TorrentDownloadState.Local
+    val percent = if (item.length > 0) (saved.downloaded * 100 / item.length).toInt() else 0
+    return TorrentDownloadState.Downloading(percent.coerceIn(0, 99))
+}
+
+/** Now Playing's source line for a torrent file: where the bytes come from. */
+fun torrentSourceLabel(state: TorrentDownloadState?): String = when (state) {
+    TorrentDownloadState.Local -> "Playing from local storage"
+    is TorrentDownloadState.Downloading -> "Streaming from BitTorrent • ${state.percent}% downloaded"
+    null -> "Streaming from BitTorrent"
 }
 
 data class TrackInfo(

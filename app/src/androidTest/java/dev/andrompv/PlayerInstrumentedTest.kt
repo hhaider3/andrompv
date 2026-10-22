@@ -310,17 +310,20 @@ class PlayerInstrumentedTest {
         }
         try {
             val item = QueueItem(Uri.fromFile(torrentFile).toString(), "sample.torrent")
-            fun open(source: QueueItem): TorrentStream.Opened {
+            fun open(source: QueueItem, queued: Set<Int>? = null): TorrentStream.Opened {
                 val latch = CountDownLatch(1)
                 var result: Result<TorrentStream.Opened>? = null
-                instrumentation.runOnMainSync { torrent.open(source) { result = it; latch.countDown() } }
+                instrumentation.runOnMainSync { torrent.open(source, queued) { result = it; latch.countDown() } }
                 assertTrue("torrent open timed out", latch.await(25, TimeUnit.SECONDS))
                 return result!!.getOrThrow()
             }
             val resolved = open(item)
             assertEquals(listOf("Episode 2.mp4", "Episode 10.mp4"), resolved.items.map { it.title })
             assertEquals(listOf(1, 0), resolved.items.map { it.torrentIndex })
-            val playing = open(resolved.items.first())
+            // Only the first episode is queued, so only it is downloaded.
+            val queuedIndex = resolved.items.first().torrentIndex!!
+            val otherIndex = resolved.items.last().torrentIndex!!
+            val playing = open(resolved.items.first(), setOf(queuedIndex))
             val connection = URL(playing.url!!).openConnection() as HttpURLConnection
             connection.connectTimeout = 5000; connection.readTimeout = 35000
             connection.setRequestProperty("Range", "bytes=10-109")
@@ -332,6 +335,29 @@ class PlayerInstrumentedTest {
             URL(playing.url).openConnection().apply { connectTimeout = 5000; readTimeout = 35000 }.getInputStream().use {
                 assertArrayEquals(media.readBytes(), it.readBytes())
             }
+            // Everything queued is saved: the progress file says so, and the torrent left the swarm
+            // (no uploading) while the stream above was served from disk.
+            val directory = TorrentStorage.directory(context)
+            val sourceKey = TorrentStream.sourceHash(item.uri)
+            var saved: TorrentProgress? = null
+            val deadline = SystemClock.uptimeMillis() + 15000
+            while (SystemClock.uptimeMillis() < deadline) {
+                saved = TorrentStorage.readProgress(directory, sourceKey)
+                if (saved?.files?.get(queuedIndex)?.done == true) break
+                SystemClock.sleep(250)
+            }
+            assertTrue("progress file never reported the queued file as saved: $saved", saved?.files?.get(queuedIndex)?.done == true)
+            assertFalse("a file that is not queued must not be downloaded", saved!!.files[otherIndex]?.done == true)
+            assertEquals("Playing from local storage", torrent.statusLabel())
+            // A verified file plays straight from disk, with no torrent running.
+            val verified = TorrentStorage.verifiedFile(directory, resolved.items.first(), saved)
+            assertNotNull("verified file should be playable directly", verified)
+            assertArrayEquals(media.readBytes(), verified!!.readBytes())
+            assertNull(TorrentStorage.verifiedFile(directory, resolved.items.last(), saved))
+            // The queue's progress: LOCAL for the saved file, a percentage for the other.
+            val states = TorrentStorage.loadProgress(directory, resolved.items, { TorrentStorage.infoHashOf(directory, it) })[item.uri]!!
+            assertEquals(TorrentDownloadState.Local, torrentDownloadState(resolved.items.first(), states))
+            assertTrue(torrentDownloadState(resolved.items.last(), states) is TorrentDownloadState.Downloading?)
             instrumentation.runOnMainSync { torrent.pause() }
             server.close()
             val reopened = open(resolved.items.first())

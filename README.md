@@ -77,7 +77,18 @@ Everything macmpv does, rebuilt for touch, plus what Android players are expecte
 - `.torrent`, `.magnet` and magnet links through native libtorrent:
   - streamed over a random-token loopback HTTP endpoint, with natural-order episodes
     keeping their original file indexes;
-  - the playing file gets download priority, then the rest download one at a time;
+  - the playing file gets download priority, then the other queued videos download one at
+    a time. Videos you remove from the queue are not downloaded;
+  - **once every queued video of a torrent is saved, it leaves the swarm** (it stops
+    uploading) and keeps playing from the saved files;
+  - the queue shows how much of each video is saved, as a percentage, or **LOCAL** once it
+    is, and Now Playing says whether it is streaming or playing from local storage. The
+    progress is kept in a small file per torrent, so it shows even when the torrent is not
+    running. Downloads from before that existed are estimated from the disk space their
+    sparse files occupy;
+  - **saved videos play straight from disk**, with no torrent started, so switching to
+    another torrent collection is as quick as opening a local file. Only a file the torrent
+    itself verified is played this way; an estimate is checked once by the torrent first;
   - downloads are reused on reopen.
   - A **Torrent Downloads** sheet lists cached torrents, with sizes, and deletes them.
 - Screenshots of the decoded video saved to Pictures/andrompv; Android 9 uses the save

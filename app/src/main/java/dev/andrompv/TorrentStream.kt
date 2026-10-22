@@ -44,11 +44,17 @@ class TorrentStream(private val context: Context, private val configureSession: 
     @Volatile private var closed = false
     @Volatile private var backgroundSuspended = false
     @Volatile private var bufferFailed = false
+    /** The torrent files that are queued; only these are downloaded. Null means every media file. */
+    @Volatile private var allowed: Set<Int>? = null
+    /** Everything queued is saved: the torrent has left the swarm and files are served from disk. */
+    @Volatile private var complete = false
+    private var savedProgress: String? = null
     private var token = UUID.randomUUID().toString()
     private var status = "No active torrent"
     private val openSockets = java.util.Collections.synchronizedSet(mutableSetOf<Socket>())
 
-    fun open(item: QueueItem, callback: (Result<Opened>) -> Unit) {
+    /** [queuedIndexes] are the torrent's files in the queue; others are not downloaded. */
+    fun open(item: QueueItem, queuedIndexes: Set<Int>? = null, callback: (Result<Opened>) -> Unit) {
         val request = generation.incrementAndGet()
         selected = null
         closeSockets()
@@ -72,8 +78,9 @@ class TorrentStream(private val context: Context, private val configureSession: 
                 }
                 manager.resume()
                 if (activeSource != item.uri || handle?.isValid != true) {
+                    writeProgress()
                     handle?.let { manager.remove(it) }
-                    handle = null; info = null; activeSource = item.uri
+                    handle = null; info = null; activeSource = item.uri; complete = false; savedProgress = null
                     val metadata = File(directory, "${sourceHash(item.uri)}.torrent")
                     var data = readCachedMetadata(metadata)
                     if (data == null) {
@@ -131,6 +138,7 @@ class TorrentStream(private val context: Context, private val configureSession: 
                 if (item.torrentIndex == null) Opened(items)
                 else {
                     val actual = items.firstOrNull { it.torrentIndex == item.torrentIndex } ?: error("The selected file is no longer in this torrent")
+                    allowed = queuedIndexes
                     selected = actual
                     bufferFailed = false
                     token = UUID.randomUUID().toString()
@@ -143,20 +151,77 @@ class TorrentStream(private val context: Context, private val configureSession: 
             main.post { if (!closed && request == generation.get()) callback(result) }
         }
     }
+    private fun isMedia(torrent: TorrentInfo, index: Int) =
+        MediaSupport.extension(torrent.files().filePath(index)) in MediaSupport.extensions
+
+    /** Media files that are queued, and so should be downloaded. */
+    private fun wantedFiles(torrent: TorrentInfo): List<Int> =
+        (0 until torrent.numFiles()).filter { isMedia(torrent, it) && allowed?.contains(it) != false }
+
+    /** Bytes of each file held in verified pieces: a file counts as done only when libtorrent has checked every piece of it. */
+    private fun verifiedProgress(current: TorrentHandle) = current.fileProgress(TorrentHandle.PIECE_GRANULARITY)
+
     private fun prioritize(index: Int) {
         val torrent = info ?: return; val current = handle ?: return
-        val media = (0 until torrent.numFiles()).filter { MediaSupport.extension(torrent.files().filePath(it)) in MediaSupport.extensions }
-        val progress = current.fileProgress()
-        // The selected file monopolizes downloads until complete; then one remaining
+        val files = torrent.files()
+        val wanted = wantedFiles(torrent)
+        val progress = verifiedProgress(current)
+        fun missing(file: Int) = progress.getOrElse(file) { 0L } < files.fileSize(file)
+        // The selected file monopolizes downloads until complete; then one remaining queued
         // media file at a time is downloaded in natural order, reusing the session.
-        val target = if (progress.getOrElse(index) { 0L } < torrent.files().fileSize(index)) index
-            else media.sortedWith { a, b -> naturalOrder.compare(torrent.files().filePath(a), torrent.files().filePath(b)) }
-                .firstOrNull { progress.getOrElse(it) { 0L } < torrent.files().fileSize(it) }
+        val target = if (index in wanted && missing(index)) index
+            else wanted.sortedWith { a, b -> naturalOrder.compare(files.filePath(a), files.filePath(b)) }.firstOrNull(::missing)
         current.clearPieceDeadlines()
+        if (target == null) {
+            leaveSwarm(current)
+            return
+        }
+        complete = false
         current.prioritizeFiles(Array(torrent.numFiles()) { if (it == target) Priority.TOP_PRIORITY else Priority.IGNORE })
         current.unsetFlags(TorrentFlags.AUTO_MANAGED)
         current.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
         current.resume()
+    }
+
+    /**
+     * Every queued file is saved: stop sharing. A paused torrent makes no connections, so nothing is
+     * uploaded; files keep being served from disk, and a stream that was waiting on pieces simply
+     * continues from the files.
+     */
+    private fun leaveSwarm(current: TorrentHandle) {
+        if (complete) return
+        complete = true
+        runCatching { current.pause() }
+        status = "Playing from local storage"
+        android.util.Log.i("andrompv-torrent", "All queued files saved; left the swarm")
+    }
+
+    /** Stops downloading files that are no longer queued; the torrent leaves the swarm if nothing queued remains. */
+    fun restrict(source: String, queuedIndexes: Set<Int>) {
+        if (activeSource != source) return
+        allowed = queuedIndexes
+        worker.execute { runCatching { selected?.torrentIndex?.let(::prioritize) } }
+    }
+
+    /** Saves each media file's progress so the queue can show it, also while the torrent is not running. */
+    private fun writeProgress() {
+        val torrent = info ?: return; val current = handle ?: return; val source = activeSource ?: return
+        if (!current.isValid) return
+        val files = torrent.files()
+        val progress = verifiedProgress(current)
+        val snapshot = TorrentProgress(
+            torrent.infoHash().toHex(),
+            (0 until torrent.numFiles()).filter { isMedia(torrent, it) }.associateWith { index ->
+                val size = files.fileSize(index)
+                val bytes = minOf(progress.getOrElse(index) { 0L }, size)
+                TorrentFileProgress(bytes, size > 0 && bytes >= size)
+            }
+        )
+        val json = snapshot.toJson()
+        if (json == savedProgress) return
+        runCatching { TorrentStorage.writeProgress(directory, sourceHash(source), snapshot) }
+            .onSuccess { savedProgress = json }
+            .onFailure { android.util.Log.w("andrompv-torrent", "Could not save progress", it) }
     }
     private fun ensureServer() {
         if (server != null) return
@@ -178,15 +243,19 @@ class TorrentStream(private val context: Context, private val configureSession: 
             Thread({
                 while (!closed) {
                     try {
-                        selected?.torrentIndex?.let { index ->
-                            val current = handle
-                            val torrent = info
-                            if (current?.isValid == true && torrent != null && session?.isPaused == false) {
-                                val progress = current.fileProgress()
-                                if (progress.getOrElse(index) { 0L } >= torrent.files().fileSize(index)) prioritize(index)
+                        val current = handle
+                        val torrent = info
+                        if (current?.isValid == true && torrent != null && session?.isPaused == false) {
+                            writeProgress()
+                            selected?.torrentIndex?.let { index ->
+                                val progress = verifiedProgress(current)
+                                val queued = wantedFiles(torrent)
+                                val saved = { file: Int -> progress.getOrElse(file) { 0L } >= torrent.files().fileSize(file) }
+                                // The selected file finished (move on to the next queued one) or everything queued is saved.
+                                if (!complete && (saved(index) || queued.all(saved))) prioritize(index)
                             }
                         }
-                        Thread.sleep(1500)
+                        Thread.sleep(1000)
                     } catch (e: InterruptedException) { return@Thread }
                     catch (e: Exception) { android.util.Log.e("andrompv-torrent", "Download monitoring failed", e) }
                 }
@@ -256,6 +325,8 @@ class TorrentStream(private val context: Context, private val configureSession: 
         } finally { openSockets.remove(socket); runCatching { socket.close() } }
     }
     private fun waitPiece(current: TorrentHandle, torrent: TorrentInfo, offset: Long, request: Int): Boolean {
+        // Saved files are served straight from disk once the torrent has left the swarm.
+        if (complete) return true
         val piece = (offset / torrent.pieceLength()).toInt()
         if (current.havePiece(piece)) {
             bufferFailed = false
@@ -288,6 +359,7 @@ class TorrentStream(private val context: Context, private val configureSession: 
     fun pause() {
         generation.incrementAndGet(); selected = null; closeSockets()
         session?.pause()
+        worker.execute { runCatching { writeProgress() } }
     }
 
     /** Backgrounding must not leave Play pointed at a loopback URL that 404s. */
@@ -304,6 +376,7 @@ class TorrentStream(private val context: Context, private val configureSession: 
 
     fun statusLabel(): String {
         val current = handle
+        if (complete && selected != null) return "Playing from local storage"
         if (bufferFailed || current?.isValid != true) return status
         val state = current.status()
         val index = selected?.torrentIndex
@@ -360,7 +433,10 @@ class TorrentStream(private val context: Context, private val configureSession: 
             val folder = File(directory, hash)
             check(!folder.exists() || folder.deleteRecursively()) { "Could not delete torrent files" }
         }
-        if (download.sourceHash.isNotEmpty()) File(directory, "${download.sourceHash}.torrent").delete()
+        if (download.sourceHash.isNotEmpty()) {
+            File(directory, "${download.sourceHash}.torrent").delete()
+            TorrentStorage.progressFile(directory, download.sourceHash).delete()
+        }
     }
     fun deleteDownload(item: QueueItem) {
         val metadata = File(directory, "${sourceHash(item.uri)}.torrent")
@@ -372,6 +448,7 @@ class TorrentStream(private val context: Context, private val configureSession: 
             session?.find(torrent.infoHash())?.let { session?.remove(it) }
             check(!targetRoot.exists() || targetRoot.deleteRecursively()) { "Could not delete torrent files" }
             check(metadata.delete()) { "Could not delete cached torrent metadata" }
+            TorrentStorage.progressFile(directory, sourceHash(item.uri)).delete()
             if (activeSource == item.uri) {
                 handle = null
                 info = null

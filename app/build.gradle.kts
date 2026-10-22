@@ -12,8 +12,8 @@ android {
         minSdk = 28
         targetSdk = 36
         // -PappVersionCode / -PappVersionName let a build pose as an older release, to test updating.
-        versionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 5
-        versionName = (project.findProperty("appVersionName") as String?) ?: "2.2.0"
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 6
+        versionName = (project.findProperty("appVersionName") as String?) ?: "2.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

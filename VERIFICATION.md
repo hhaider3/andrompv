@@ -1,4 +1,4 @@
-# Verification — 2026-10-15 (andrompv 2.2.0)
+# Verification — 2026-10-15 (andrompv 2.3.0)
 
 ## Automated checks
 
@@ -104,6 +104,26 @@ real v2.1.0 release:
   The leftover download is deleted at the next launch.
 - Not tested: a checksum mismatch or a truncated download on a live connection (both throw
   and discard the file in the code), and updating on a physical phone.
+
+## Torrent seeding, progress and direct play (ported from macmpv 1.9)
+
+- Unit tests (6) cover the saved-progress format and its bad-input handling, the row state
+  (a percentage capped at 99, or LOCAL), the Now Playing source line, the disk-usage
+  estimate for older downloads, and when a file may play straight from disk.
+- The instrumented torrent test now downloads only the queued episode from a loopback
+  webseed. It checks the progress file reports it saved and the other file not, the torrent
+  reports "Playing from local storage" (it left the swarm), the saved file is verified for
+  direct play with matching bytes, and the queue state is LOCAL for it.
+- Real swarm, emulator: the Creative Commons Big Buck Bunny magnet streamed, and its progress
+  file grew while it downloaded (72 MB, then 276,134,947 of 276,134,947 bytes). On completion
+  the log showed "All queued files saved; left the swarm", the header changed to "Playing
+  from local storage", and the queue row read `MP4 • 263.3 MB • LOCAL`.
+- After restarting the app, the LOCAL label came back from the progress file, and playing the
+  item made mpv open the saved file on disk. The torrent never started (no libtorrent log
+  lines) and playback resumed from the saved position.
+- Not tested: a very large torrent, whether uploading really stops on a real phone's network
+  (the code pauses the torrent, which closes its peer connections), and torrents with several
+  queued videos on a real swarm.
 
 ## Emulator rendering finding
 

@@ -87,6 +87,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import dev.andrompv.torrentSourceLabel
+import dev.andrompv.TorrentDownloadState
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -507,7 +513,7 @@ private fun QueueRow(
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    rowSubtitle(item),
+                    rowSubtitle(item, player.torrentDownloadState(item)),
                     color = Palette.textTertiary,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
@@ -562,7 +568,7 @@ private fun QueueRow(
     }
 }
 
-private fun rowSubtitle(item: QueueItem): String {
+private fun rowSubtitle(item: QueueItem, download: TorrentDownloadState?): AnnotatedString {
     val parts = mutableListOf<String>()
     parts += if (item.isTorrent && item.torrentIndex == null) "READING FILES…" else item.fileExtension.ifEmpty { "STREAM" }
     val size = item.sizeLabel
@@ -570,7 +576,16 @@ private fun rowSubtitle(item: QueueItem): String {
     if (item.isTorrent && size != null) parts += size
     else if (duration != null) parts += playbackTime(duration)
     else if (size != null) parts += size
-    return parts.joinToString(" • ")
+    return buildAnnotatedString {
+        append(parts.joinToString(" • "))
+        // How much of a torrent video is saved, or LOCAL once it is, which plays from disk.
+        if (download != null && item.isTorrent) {
+            append(" • ")
+            withStyle(SpanStyle(color = if (download == TorrentDownloadState.Local) Palette.local else Palette.textTertiary)) {
+                append(download.label)
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -589,16 +604,19 @@ private fun NowPlayingCard(player: PlayerController, item: QueueItem) {
         Text(item.title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
         val badges = (player.metadata ?: item.metadata)?.badges.orEmpty()
+        val torrentFile = item.torrentIndex != null
         when {
             badges.isNotEmpty() -> FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 badges.forEach { MetadataPill(it) }
             }
-            item.isTorrent -> StatusLine(
-                if (item.torrentIndex == null) "Reading torrent contents…" else player.torrentStatus ?: "Streaming from BitTorrent",
-                spinning = item.torrentIndex == null
-            )
+            item.isTorrent && !torrentFile -> StatusLine("Reading torrent contents…", spinning = true)
+            torrentFile -> Unit
             item.probeFailed -> StatusLine("Media info unavailable", spinning = false)
             else -> StatusLine("Reading media info…", spinning = true)
+        }
+        if (torrentFile) {
+            if (badges.isNotEmpty()) Spacer(Modifier.height(8.dp))
+            StatusLine(torrentSourceLabel(player.torrentDownloadState(item)), spinning = false)
         }
     }
 }

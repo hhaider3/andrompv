@@ -23,6 +23,8 @@ object Palette {
     val cyan = Color(0xFF40C8E0)
     val accent = Color(0xFF7DD3FC)
     val warning = Color(0xFFFF9F0A)
+    /** A torrent video that is saved on the device. */
+    val local = Color(0xFF8BD99B)
     val danger = Color(0xFFFF6961)
     val playGlyph = Color(0xFF0F1220)
 

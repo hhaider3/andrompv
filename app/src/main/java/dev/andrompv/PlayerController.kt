@@ -51,6 +51,9 @@ class PlayerController(context: Context) {
     val previews = SeekPreview(app)
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
+    private val torrentDirectory = TorrentStorage.directory(app)
+    private val infoHashes = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var progressRefreshing = false
 
     var position by mutableDoubleStateOf(0.0); private set
     var duration by mutableDoubleStateOf(0.0); private set
@@ -80,6 +83,8 @@ class PlayerController(context: Context) {
     var error by mutableStateOf<String?>(null); private set
     var notice by mutableStateOf<Notice?>(null); private set
     var queueVersion by mutableLongStateOf(0L); private set
+    /** Saved progress of queued torrent files by source, refreshed about once a second. */
+    var torrentProgress by mutableStateOf<Map<String, TorrentProgress>>(emptyMap()); private set
     private var sidebarState by mutableStateOf(store.sidebarVisible)
     val isSidebarVisible: Boolean get() = sidebarState
 
@@ -121,6 +126,7 @@ class PlayerController(context: Context) {
     private val ticker = object : Runnable {
         override fun run() {
             sync()
+            refreshTorrentProgress()
             // Only a torrent that play() started has a status; a restored one waits for Play.
             if (current?.isTorrent == true && torrentStatus != null) torrentStatus = torrents.statusLabel()
             if (uiVisible || isPlaying) main.postDelayed(this, 1000)
@@ -330,8 +336,37 @@ class PlayerController(context: Context) {
         repeat = queue.repeat
         collapsedGroups = queue.collapsedGroups.toSet()
         queueVersion++
+        refreshTorrentProgress()
         notifySessionIfChanged()
     }
+
+    // region Torrent progress
+
+    fun torrentDownloadState(item: QueueItem): TorrentDownloadState? = torrentDownloadState(item, torrentProgress[item.uri])
+
+    private fun infoHashOf(sourceHash: String): String? =
+        infoHashes[sourceHash] ?: TorrentStorage.infoHashOf(torrentDirectory, sourceHash)?.also { infoHashes[sourceHash] = it }
+
+    private fun refreshTorrentProgress() {
+        val torrentItems = queue.items.filter { it.torrentIndex != null }
+        if (torrentItems.isEmpty()) {
+            if (torrentProgress.isNotEmpty()) torrentProgress = emptyMap()
+            return
+        }
+        if (progressRefreshing) return
+        progressRefreshing = true
+        io.execute {
+            val loaded = runCatching { TorrentStorage.loadProgress(torrentDirectory, torrentItems, ::infoHashOf) }.getOrNull()
+            main.post {
+                progressRefreshing = false
+                if (loaded != null && loaded != torrentProgress) torrentProgress = loaded
+            }
+        }
+    }
+
+    private fun queuedTorrentFiles(source: String) = queue.items.filter { it.uri == source && it.torrentIndex != null }
+
+    // endregion
 
     private fun notifySessionIfChanged() {
         val signature = listOf(
@@ -388,10 +423,19 @@ class PlayerController(context: Context) {
         queue.currentId = item.id
         pendingPlay = null
         torrentStatus = null
-        if (item.isTorrent) {
+        val progress = if (item.torrentIndex != null) TorrentStorage.readProgress(torrentDirectory, TorrentStream.sourceHash(item.uri)) else null
+        val savedFile = item.takeIf { it.torrentIndex != null }?.let { TorrentStorage.verifiedFile(torrentDirectory, it, progress) }
+        val queuedIndexes = queuedTorrentFiles(item.uri).mapNotNullTo(mutableSetOf()) { it.torrentIndex }
+        if (savedFile != null) {
+            // Verified downloads play straight from disk. The torrent only runs, in the background,
+            // when other queued files of it still need downloading.
+            if (queuedTorrentFiles(item.uri).all { TorrentStorage.verifiedFile(torrentDirectory, it, progress) != null }) torrents.pause()
+            else torrents.open(item, queuedIndexes) { }
+            loadSource(item, savedFile.absolutePath, resume)
+        } else if (item.isTorrent) {
             engine.stop()
             torrentStatus = if (item.torrentIndex == null) "Reading torrent contents…" else "Connecting to peers…"
-            torrents.open(item) { result ->
+            torrents.open(item, queuedIndexes.takeIf { item.torrentIndex != null }) { result ->
                 if (token != requestGeneration || queue.currentId != item.id) return@open
                 result.fold(
                     onSuccess = { opened ->
@@ -651,7 +695,12 @@ class PlayerController(context: Context) {
         if (ids.isEmpty()) return
         val wasCurrent = queue.currentId in ids
         if (wasCurrent) remember()
+        val torrentSources = queue.items.filter { it.id in ids && it.torrentIndex != null }.mapTo(mutableSetOf()) { it.uri }
         val next = queue.remove(ids)
+        // Episodes removed from the queue are no longer downloaded.
+        torrentSources.forEach { source ->
+            torrents.restrict(source, queuedTorrentFiles(source).mapNotNullTo(mutableSetOf()) { it.torrentIndex })
+        }
         if (wasCurrent) {
             requestGeneration++
             pendingPlay = null
